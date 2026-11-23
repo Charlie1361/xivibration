@@ -6,23 +6,23 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 
 - **After you log in,** the plugin analyses the animation timeline (`.tmb`) of every skill of every job. It starts with your current job. If you use a mod for an animation, Penumbra hands it the modded file, so the timing matches what you see. It saves one vibration pattern per skill. Skills that already have a pattern are left alone.
 - **Vibration follows the skill's sounds first.** Every sound the skill plays (swings, impacts, charge-ups, extra strikes) is decoded, mod sounds included.
-  - Each attack in a sound gives a pulse: it starts on the attack, rises with the sound to its peak and stops shortly after it, as soon as the sound has dropped or after a short tail.
-  - The sustained part of a sound (reverb, held tones) doesn't vibrate, so hits stay separate and crisp.
-  - Strength follows how loud the sound is. Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
+  - A skill's sound usually has a loud background (reverb, held tones) with louder bumps on top: the hits. Each bump that stands out from the dips around it becomes a **solid block** at the sound's level, covering the top of the bump, followed by a **short fade-out**. The background doesn't vibrate.
+  - Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
   - Tune it under Settings → Sound:
-    - **Attack threshold:** how big a jump makes a pulse.
-    - **Tail after peak:** the longest a pulse rings on.
-    - **Cut when the sound drops by:** how soon a pulse stops.
+    - **Threshold:** how far a bump must stand out.
+    - **Fade-out:** the length of the fade after each block.
+    - **Join bumps closer than:** turns nearby bumps into one block.
+    - **Also pulse on hits without a sound bump:** off by default.
 
     Patterns rebuild when you let go of a slider.
-- **Hits without a sound of their own** come from the animation:
+- **Skills without sounds, or with sounds that can't be read,** get their pulses from the animation:
   - the target's hit reaction (Flinch)
   - effects and sounds that land on the target
   - follow-up strike sounds
   - vibration the animation already has
   - the parts it plays from other timelines
 
-  A strike inside a sounding pulse gets its own accent pulse. Buffs and heals without sounds follow their effect beats.
+  Buffs and heals without sounds follow their effect beats.
 - **MultiHit tables** (optional): if the MultiHit plugin has a hit table for a skill, each hit in it gets its own pulse too, harder for hits that do more damage. That includes the final hit when the table doesn't add up to 100%. Tables are matched by animation, so every version of a skill gets them.
 - **Timed to the real animation:** a pattern starts when the animation actually starts on your character, not when the server message arrives, and it plays faster or slower along with the animation. Hits closer than 90 ms join into one continuous pulse so they can be felt.
 - **Patterns stay current:** generated patterns are rebuilt automatically when a skill's animation changes (another mod or option) or the analysis improves. Patterns you edited are never touched.

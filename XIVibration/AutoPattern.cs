@@ -68,7 +68,8 @@ public static class AutoPattern
             var seg = Audio.SoundSegmenter.Segment(sound, cfg.Sound);
             if (seg.Clips.Count > 0)
             {
-                var pulses = MergeWithHits(seg.Clips, hits, hitPulses);
+                // Sound decides. Animation hits without a sound bump only vibrate when asked for.
+                var pulses = cfg.Sound.PulseSilentHits ? MergeWithHits(seg.Clips, hits, hitPulses) : seg.Clips;
                 return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true);
             }
         }

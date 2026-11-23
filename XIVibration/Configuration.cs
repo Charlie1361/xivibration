@@ -93,21 +93,24 @@ public sealed class AutoStrengths
 [Serializable]
 public sealed class SoundTuning
 {
-    public const float DefaultAttackThreshold = 0.15f;
-    public const int DefaultTailMs = 150;
-    public const float DefaultCutDrop = 0.30f;
+    public const float DefaultThreshold = 0.12f;
+    public const int DefaultFadeTailMs = 60;
+    public const int DefaultJoinGapMs = 60;
 
-    /// <summary>How big a jump in a sound (0..1) makes a pulse.</summary>
-    public float AttackThreshold { get; set; } = DefaultAttackThreshold;
+    /// <summary>How far (0..1) a sound must rise above its own background to vibrate.</summary>
+    public float Threshold { get; set; } = DefaultThreshold;
 
-    /// <summary>Longest a pulse goes on after the sound's peak.</summary>
-    public int TailMs { get; set; } = DefaultTailMs;
+    /// <summary>Length of the fade-out after each block.</summary>
+    public int FadeTailMs { get; set; } = DefaultFadeTailMs;
 
-    /// <summary>A pulse stops when the sound has dropped this much below its peak (0..1).</summary>
-    public float CutDrop { get; set; } = DefaultCutDrop;
+    /// <summary>Loud parts closer together than this become one block.</summary>
+    public int JoinGapMs { get; set; } = DefaultJoinGapMs;
+
+    /// <summary>Also pulse on animation hits that have no sound of their own.</summary>
+    public bool PulseSilentHits { get; set; }
 
     [Newtonsoft.Json.JsonIgnore]
-    public string Key => $"{this.AttackThreshold:0.###}|{this.TailMs}|{this.CutDrop:0.###}";
+    public string Key => $"{this.Threshold:0.###}|{this.FadeTailMs}|{this.JoinGapMs}|{this.PulseSilentHits}";
 }
 
 [Serializable]

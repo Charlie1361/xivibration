@@ -493,8 +493,8 @@ public sealed class MainWindow : Window, IDisposable
             }
             else
             {
-                ImGui.TextWrapped("Automatic: follows the skill's sounds. Each attack in a sound gives a clip that stops shortly after the sound's peak, as strong as the sound is loud " +
-                                  "(bass = strong motor, crisp sounds = weak motor). Hits without a sound get a pulse from the animation. " +
+                ImGui.TextWrapped("Automatic: follows the skill's sounds. Each clear bump in the sound is a solid block at the sound's level with a short fade-out " +
+                                  "(bass = strong motor, crisp sounds = weak motor). Without readable sounds, pulses come from the animation's hits. " +
                                   "The colored shading behind the clips is the sound.");
             }
         }
@@ -1005,51 +1005,63 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextUnformatted("Sound");
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextWrapped("Each attack in a skill's sound gives a pulse that stops shortly after the sound's peak; the sustained part of a sound doesn't vibrate. Patterns rebuild when you let go of a slider.");
+            ImGui.TextWrapped("A skill's sound has a loud background (reverb, held tones) with louder bumps on top: the hits. Each bump becomes a solid block at the sound's level with a short fade-out; the background doesn't vibrate. Patterns rebuild when you let go of a slider.");
         var snd = this.Config.Sound;
         var rebuild = false;
 
         ImGui.SetNextItemWidth(200 * scale);
-        var thr = snd.AttackThreshold * 100f;
-        if (ImGui.SliderFloat("Attack threshold##snd", ref thr, 5f, 50f, "%.0f"))
+        var thr = snd.Threshold * 100f;
+        if (ImGui.SliderFloat("Threshold##snd", ref thr, 3f, 40f, "%.0f"))
         {
-            snd.AttackThreshold = thr / 100f;
+            snd.Threshold = thr / 100f;
             this.MarkDirty();
         }
 
         rebuild |= ImGui.IsItemDeactivatedAfterEdit();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("How big a jump in a sound makes a pulse.\nHigher: only clear hits vibrate. Lower: smaller sounds vibrate too.");
+            ImGui.SetTooltip("How far a sound must rise above its own background to vibrate.\nHigher: only the clearest hits. Lower: smaller bumps too.");
 
         ImGui.SetNextItemWidth(200 * scale);
-        var tail = snd.TailMs;
-        if (ImGui.SliderInt("Tail after peak##snd", ref tail, 40, 500, "%d ms"))
+        var tail = snd.FadeTailMs;
+        if (ImGui.SliderInt("Fade-out##snd", ref tail, 0, 300, "%d ms"))
         {
-            snd.TailMs = tail;
+            snd.FadeTailMs = tail;
             this.MarkDirty();
         }
 
         rebuild |= ImGui.IsItemDeactivatedAfterEdit();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("The longest a pulse goes on after the sound's peak.\nShorter: crisp taps. Longer: pulses ring out with the sound.");
+            ImGui.SetTooltip("Length of the fade-out after each block.");
 
         ImGui.SetNextItemWidth(200 * scale);
-        var cut = snd.CutDrop * 100f;
-        if (ImGui.SliderFloat("Cut when the sound drops by##snd", ref cut, 10f, 80f, "%.0f%%"))
+        var join = snd.JoinGapMs;
+        if (ImGui.SliderInt("Join bumps closer than##snd", ref join, 0, 300, "%d ms"))
         {
-            snd.CutDrop = cut / 100f;
+            snd.JoinGapMs = join;
             this.MarkDirty();
         }
 
         rebuild |= ImGui.IsItemDeactivatedAfterEdit();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("A pulse stops as soon as the sound has fallen this much below its peak.\nLower: pulses stop sooner after each hit.");
+            ImGui.SetTooltip("Bumps closer together than this become one block.\nHigher: fewer, longer blocks. Lower: more separate blocks.");
+
+        var silent = snd.PulseSilentHits;
+        if (ImGui.Checkbox("Also pulse on hits without a sound bump##snd", ref silent))
+        {
+            snd.PulseSilentHits = silent;
+            this.MarkDirty();
+            rebuild = true;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Hits found in the animation (target flinches, MultiHit tables) where the sound has no bump get a pulse of their own.");
 
         if (ImGui.Button("Reset sound settings"))
         {
-            snd.AttackThreshold = SoundTuning.DefaultAttackThreshold;
-            snd.TailMs = SoundTuning.DefaultTailMs;
-            snd.CutDrop = SoundTuning.DefaultCutDrop;
+            snd.Threshold = SoundTuning.DefaultThreshold;
+            snd.FadeTailMs = SoundTuning.DefaultFadeTailMs;
+            snd.JoinGapMs = SoundTuning.DefaultJoinGapMs;
+            snd.PulseSilentHits = false;
             this.MarkDirty();
             rebuild = true;
         }
@@ -1196,11 +1208,10 @@ public sealed class MainWindow : Window, IDisposable
             "have a pattern are not touched.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Sounds come first: every sound the skill plays is read. Each attack in it gives a pulse that starts on the attack, peaks " +
-            "with the sound and stops shortly after the peak, as strong as the sound is loud; the sustained part of a sound doesn't vibrate " +
-            "(tune it under Settings > Sound). Bass drives the strong motor, crisp sounds the weak one. Hits without a sound " +
-            "of their own (the target's hit reaction, effects on the target, MultiHit tables) get a pulse from the animation. " +
-            "Buffs and heals without sounds follow their effect beats.");
+            "Sounds come first: every sound the skill plays is read. Each clear bump in the sound becomes a solid block at the sound's " +
+            "level with a short fade-out; the sound's background (reverb, held tones) doesn't vibrate (tune it under Settings > Sound). Bass drives the strong motor, crisp sounds the weak one. " +
+            "Skills without readable sounds get pulses from the animation's hits (the target's hit reaction, effects on the target, MultiHit tables); " +
+            "buffs and heals without sounds follow their effect beats. The numbered waypoints show the animation's hits either way.");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +

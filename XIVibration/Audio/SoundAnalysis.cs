@@ -120,38 +120,36 @@ public sealed class SkillSound
 }
 
 /// <summary>
-/// Cuts a skill's sound into vibration clips: one per attack. A clip starts where a sound hits,
-/// rises with it to its peak and stops shortly after: when the sound drops by
-/// <see cref="SoundTuning.CutDrop"/> or after <see cref="SoundTuning.TailMs"/>, whichever comes first.
-/// The sustained part of a sound (reverb, a held tone) doesn't vibrate: only the excess over a slow
-/// background follower can start a clip.
+/// Cuts a skill's sound into vibration clips. A skill's sound usually has a loud bed (reverb,
+/// held tones) with louder bumps on top: the hits. Each bump above the bed becomes a solid
+/// block at the sound's level, followed by a short fade-out. The bed itself doesn't vibrate.
 /// </summary>
 public static class SoundSegmenter
 {
     /// <summary>Below this level nothing vibrates.</summary>
     public const float Floor = 0.08f;
 
-    /// <summary>An attack is a jump of <see cref="SoundTuning.AttackThreshold"/> within this window.</summary>
-    public const int RiseWindowMs = 60;
+    /// <summary>The loudness is smoothed over this window first, so ripples don't flicker.</summary>
+    public const int SmoothMs = 30;
 
-    public const int MinAttackSpacingMs = 90;
+    /// <summary>How far each way to look for the dips that make a peak stand out.</summary>
+    public const int ProminenceWindowMs = 400;
 
-    /// <summary>How long after an attack the level may keep rising to its peak.</summary>
-    public const int MaxRiseMs = 120;
+    /// <summary>A block is at most this long before its fade-out, so a broad bump doesn't become a buzz.</summary>
+    public const int MaxBlockMs = 250;
 
-    /// <summary>A rise longer than this is a swell: it gets its own fade-in clip.</summary>
-    public const int SwellMs = 40;
+    /// <summary>The stronger motor of a block is at least this (%), the other in proportion.</summary>
+    public const int MinBlockLevel = 25;
 
-    /// <summary>The background follows the sound slowly up and quickly down.</summary>
-    public const int BackgroundRiseMs = 250;
-    public const int BackgroundFallMs = 150;
+    /// <summary>A block covers the top of its bump: this share of the bump's height.</summary>
+    public const float TopShare = 0.3f;
 
     public const int MinClipMs = 60;
     public const int MergeBelowMs = 40;
     public const int MinGapMs = 25;
 
-    /// <summary>Quiet before each attack, so back-to-back attacks are felt one by one.</summary>
-    public const int GapBeforeAttackMs = 30;
+    /// <summary>Quiet left before the next block's start.</summary>
+    public const int GapBeforeBlockMs = 30;
 
     public sealed record Result(List<VibrationPulse> Clips, List<int> Marks);
 
@@ -159,88 +157,153 @@ public static class SoundSegmenter
     {
         const int step = SoundEnvelope.StepMs;
         var n = sound.Low.Length;
+        if (n == 0)
+            return new Result(new(), new());
+
+        // Loudness, smoothed.
+        var raw = new float[n];
+        for (var i = 0; i < n; i++)
+            raw[i] = Math.Max(sound.Low[i], sound.High[i]);
+        var half = Math.Max(1, SmoothMs / step / 2);
         var e = new float[n];
         for (var i = 0; i < n; i++)
-            e[i] = Math.Max(sound.Low[i], sound.High[i]);
-
-        // Excess over the background: what stands out from the sustained sound.
-        var up = 1f - MathF.Exp(-step / (float)BackgroundRiseMs);
-        var down = 1f - MathF.Exp(-step / (float)BackgroundFallMs);
-        var x = new float[n];
-        var bg = 0f;
-        for (var t = 0; t < n; t++)
         {
-            x[t] = Math.Max(0f, e[t] - bg);
-            bg += (e[t] - bg) * (e[t] > bg ? up : down);
+            float sum = 0;
+            var c = 0;
+            for (var k = Math.Max(0, i - half); k <= Math.Min(n - 1, i + half); k++)
+            {
+                sum += raw[k];
+                c++;
+            }
+
+            e[i] = sum / c;
         }
 
-        // Attacks: the excess jumps by the threshold within the rise window.
-        var window = Math.Max(1, RiseWindowMs / step);
-        var attacks = new List<int>();
-        for (var t = 0; t < n; t++)
+        // Bumps: local peaks that rise at least the threshold above the dips on both sides
+        // (prominence, looking at most ProminenceWindowMs each way).
+        var w = ProminenceWindowMs / step;
+        var regions = new List<(int Start, int End)>();
+        for (var i = 0; i < n; i++)
         {
-            var min = t == 0 ? 0f : float.MaxValue;
-            for (var k = Math.Max(0, t - window); k < t; k++)
-                min = Math.Min(min, x[k]);
-            if (e[t] >= Floor && x[t] - min >= tuning.AttackThreshold
-                && (attacks.Count == 0 || (t - attacks[^1]) * step >= MinAttackSpacingMs))
-                attacks.Add(t);
+            var peak = e[i];
+            if (peak < Floor || (i > 0 && e[i - 1] >= peak) || (i + 1 < n && e[i + 1] > peak))
+                continue;
+
+            var leftMin = peak;
+            for (var k = i - 1; k >= Math.Max(-1, i - w); k--)
+            {
+                var v = k < 0 ? 0f : e[k];
+                if (v > peak)
+                    break;
+                leftMin = Math.Min(leftMin, v);
+            }
+
+            var rightMin = peak;
+            for (var k = i + 1; k <= Math.Min(n, i + w); k++)
+            {
+                var v = k >= n ? 0f : e[k];
+                if (v > peak)
+                    break;
+                rightMin = Math.Min(rightMin, v);
+            }
+
+            var prominence = peak - Math.Max(leftMin, rightMin);
+            if (prominence < tuning.Threshold)
+                continue;
+
+            // The block covers the top of the bump.
+            var level = peak - prominence * TopShare;
+            var s0 = i;
+            while (s0 > 0 && e[s0 - 1] >= level)
+                s0--;
+            var s1 = i + 1;
+            while (s1 < n && e[s1] >= level)
+                s1++;
+            regions.Add((s0, s1));
         }
 
+        regions.Sort((x, y) => x.Start.CompareTo(y.Start));
+        for (var i = regions.Count - 1; i > 0; i--)
+        {
+            // Overlapping tops of the same bump.
+            if (regions[i].Start < regions[i - 1].End)
+            {
+                regions[i - 1] = (regions[i - 1].Start, Math.Max(regions[i - 1].End, regions[i].End));
+                regions.RemoveAt(i);
+            }
+        }
+
+        // Bumps close together are one block.
+        var joinSteps = Math.Max(0, tuning.JoinGapMs / step);
+        for (var i = regions.Count - 1; i > 0; i--)
+        {
+            if (regions[i].Start - regions[i - 1].End <= joinSteps)
+            {
+                regions[i - 1] = (regions[i - 1].Start, regions[i].End);
+                regions.RemoveAt(i);
+            }
+        }
+
+        // Each block: solid at the sound's level, then a short fade-out.
         var pulses = new List<VibrationPulse>();
-        for (var i = 0; i < attacks.Count; i++)
+        var tailSteps = Math.Max(0, tuning.FadeTailMs / step);
+        var gapSteps = GapBeforeBlockMs / step;
+        for (var r = 0; r < regions.Count; r++)
         {
-            var t0 = attacks[i];
-            var next = i + 1 < attacks.Count ? attacks[i + 1] : n;
-            var stop = i + 1 < attacks.Count ? Math.Max(t0 + MinClipMs / step, next - GapBeforeAttackMs / step) : n;
+            var (s0, s1) = regions[r];
+            var limit = r + 1 < regions.Count ? regions[r + 1].Start - gapSteps : n + tailSteps;
+            s1 = Math.Max(s0 + 1, Math.Min(Math.Min(s1, limit), s0 + MaxBlockMs / step));
+            var strong = Loud(sound.Low, s0, s1);
+            var weak = Loud(sound.High, s0, s1);
+            if (strong <= 0 && weak <= 0)
+                continue;
 
-            // Peak: follow the rise for a little while.
-            var tp = t0;
-            for (var k = t0; k < Math.Min(next, t0 + MaxRiseMs / step + 1); k++)
+            // A bump clear enough to be found is a hit worth feeling, even in a quiet sound.
+            var top = Math.Max(strong, weak);
+            if (top < MinBlockLevel)
             {
-                if (e[k] >= e[tp])
-                    tp = k;
-                else if (e[k] < 0.9f * e[tp])
-                    break;
+                strong = (int)MathF.Round(strong * MinBlockLevel / (float)top);
+                weak = (int)MathF.Round(weak * MinBlockLevel / (float)top);
             }
 
-            // Cut-off: the sound dropped enough, the tail is over, or the next attack comes.
-            var peak = e[tp];
-            var end = Math.Min(stop, tp + Math.Max(1, tuning.TailMs / step) + 1);
-            for (var k = tp + 1; k < end; k++)
+            pulses.Add(new VibrationPulse
             {
-                if (e[k] < peak * (1f - tuning.CutDrop))
+                DelayMs = s0 * step,
+                DurationMs = (s1 - s0) * step,
+                Strong = strong,
+                Weak = weak,
+                Shape = PulseShape.Constant,
+            });
+
+            var tail = Math.Min(tailSteps, limit - s1);
+            if (tail * step >= 20)
+            {
+                pulses.Add(new VibrationPulse
                 {
-                    end = k;
-                    break;
-                }
-            }
-
-            end = Math.Max(end, t0 + 1);
-            var strong = 0f;
-            var weak = 0f;
-            for (var k = t0; k < end; k++)
-            {
-                strong = Math.Max(strong, sound.Low[k]);
-                weak = Math.Max(weak, sound.High[k]);
-            }
-
-            var s = (int)MathF.Round(strong * 100);
-            var w = (int)MathF.Round(weak * 100);
-            if ((tp - t0) * step > SwellMs && tp < end)
-            {
-                pulses.Add(new VibrationPulse { DelayMs = t0 * step, DurationMs = (tp - t0) * step, Strong = s, Weak = w, Shape = PulseShape.FadeIn });
-                pulses.Add(new VibrationPulse { DelayMs = tp * step, DurationMs = Math.Max(step, (end - tp) * step), Strong = s, Weak = w, Shape = PulseShape.FadeOut });
-            }
-            else
-            {
-                pulses.Add(new VibrationPulse { DelayMs = t0 * step, DurationMs = (end - t0) * step, Strong = s, Weak = w, Shape = PulseShape.FadeOut });
+                    DelayMs = s1 * step,
+                    DurationMs = tail * step,
+                    Strong = strong,
+                    Weak = weak,
+                    Shape = PulseShape.FadeOut,
+                });
             }
         }
 
         Tidy(pulses);
         var marks = pulses.SelectMany(p => new[] { p.DelayMs, p.DelayMs + p.DurationMs }).Distinct().ToList();
         return new Result(pulses, marks);
+    }
+
+    /// <summary>The loud part of a band in a block (80th percentile), as 0..100.</summary>
+    private static int Loud(float[] band, int a, int b)
+    {
+        var vals = new List<float>(b - a);
+        for (var i = a; i < b && i < band.Length; i++)
+            vals.Add(band[i]);
+        if (vals.Count == 0)
+            return 0;
+        vals.Sort();
+        return (int)MathF.Round(vals[(int)(0.8f * (vals.Count - 1))] * 100);
     }
 
     /// <summary>Make clips motor-friendly: no tiny clips, no tiny gaps.</summary>
