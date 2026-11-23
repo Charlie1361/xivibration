@@ -496,7 +496,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             else
             {
-                ImGui.TextWrapped("Automatic: one pulse on each hit of the animation, as strong as the skill's sound is loud at that hit; the last hit is the strongest " +
+                ImGui.TextWrapped("Automatic: one pulse on each hit of the animation (plus clear hits the sound shows that the markers miss), as strong as the skill's sound is loud at that hit " +
                                   "(bass = strong motor, crisp sounds = weak motor). Without readable sounds, pulses come from the animation's hits. " +
                                   "The colored shading behind the clips is the sound.");
             }
@@ -1057,7 +1057,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextUnformatted("Sound");
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextWrapped("Pulses sit on the animation's hits, as strong as the skill's sound is loud at each hit (bass: strong motor, the rest: weak motor). The last hit is always the strongest. Optionally, patterns can be built from the sound's bumps instead.");
+            ImGui.TextWrapped("Pulses sit on the animation's hits, as strong as the skill's sound is loud at each hit (bass: strong motor, the rest: weak motor): a louder sound gives a stronger vibration, the last hit included. Optionally, patterns can be built from the sound's bumps instead.");
         var snd = this.Config.Sound;
         var rebuild = false;
 
@@ -1329,6 +1329,20 @@ public sealed class MainWindow : Window, IDisposable
 
         rebuild |= ImGui.IsItemDeactivatedAfterEdit();
 
+        var fill = h.FillFromSound;
+        if (ImGui.Checkbox("Add hits the markers miss, from the sound##hits", ref fill))
+        {
+            h.FillFromSound = fill;
+            rebuild = true;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("The sound is analysed even when the animation has markers. If it shows more clear hits than there are\n" +
+                             "markers (e.g. 2 markers, 3 clear hits heard), the peaks no marker is near are added as hits.\n" +
+                             "Sound > Threshold sets how clear a peak must be.");
+        }
+
         var fb = h.FallbackToDamageNumber;
         if (ImGui.Checkbox("If nothing matches, use the damage number##hits", ref fb))
         {
@@ -1435,7 +1449,8 @@ public sealed class MainWindow : Window, IDisposable
             "Hits decide when, the sound decides how strong. You choose which animation cues make a hit and how many must meet at the " +
             "same moment (Settings > Hit detection; MultiHit is off and 'effect on the target' is ignored by default). Skills without any hit " +
             "markers use the peaks in their sound as hits. Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
-            "strong motor, crisp sounds the weak one. The last hit is always the strongest. Optionally (Settings > Sound), patterns can be " +
+            "strong motor, crisp sounds the weak one; a louder sound gives a stronger vibration. If the sound shows more clear hits than " +
+            "the markers, the missing ones are added from it. Optionally (Settings > Sound), patterns can be " +
             "built from the sound's bumps instead.");
         ImGui.Spacing();
         ImGui.TextWrapped(

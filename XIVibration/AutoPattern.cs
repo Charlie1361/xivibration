@@ -56,6 +56,8 @@ public sealed record AutoResult(
                     parts.Add("nothing matched the hit rules");
                     break;
                 default:
+                    var fromPeaks = this.Hits.Count(h => h.Sources == HitSource.SoundPeak);
+                    if (fromPeaks > 0) parts.Add($"{fromPeaks} more from peaks in the sound");
                     if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
                     if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
                     if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
@@ -103,6 +105,11 @@ public static class AutoPattern
         {
             hits = analysis.Hits;
             origin = HitOrigin.Markers;
+
+            // The sound can show more hits than the markers (2 markers, 3 clear hits heard):
+            // add the clear peaks no marker is near.
+            if (sound != null && cfg.Hits.FillFromSound)
+                hits = FillMissingHits(hits, ClearSoundHits(sound, cfg.Sound.Threshold), cfg.Hits.WindowFrames);
         }
         else if (sound != null && (soundPeaks = SoundPeakHits(sound, cfg.Sound.Threshold)).Count > 0)
         {
@@ -127,7 +134,7 @@ public static class AutoPattern
 
         var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
 
-        // Hits decide when; the sound decides how strong.
+        // Hits decide when; the sound decides how strong (louder sound, stronger vibration), the last hit included.
         if (sound != null)
             ApplySoundLevels(hitPulses, hits, sound);
 
@@ -138,13 +145,49 @@ public static class AutoPattern
             if (seg.Clips.Count > 0)
             {
                 var pulses = cfg.Sound.PulseSilentHits ? MergeWithHits(seg.Clips, hits, hitPulses) : seg.Clips;
-                MakeLastHitLoud(pulses, hits);
                 return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true, analysis.Rejected, origin);
             }
         }
 
-        MakeLastHitLoud(hitPulses, hits);
         return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound, null, false, analysis.Rejected, origin);
+    }
+
+    /// <summary>
+    /// Adds sound peaks that no marker is near, when the sound has more clear hits than there are markers.
+    /// A peak counts as the same hit as a marker within the "same moment" window (at least 100 ms).
+    /// </summary>
+    private static List<HitPoint> FillMissingHits(List<HitPoint> markers, List<HitPoint> peaks, int windowFrames)
+    {
+        if (peaks.Count <= markers.Count)
+            return markers;
+
+        var near = Math.Max(100, (int)MathF.Round(windowFrames * TmbParser.MsPerFrame));
+        var added = peaks.Where(p => !markers.Any(m => Math.Abs(m.Ms - p.Ms) <= near)).ToList();
+        if (added.Count == 0)
+            return markers;
+
+        return markers.Concat(added).OrderBy(h => h.Ms).ToList();
+    }
+
+    /// <summary>Only clear hits fill in for missing markers: this much louder than the threshold asks...</summary>
+    private const float FillProminence = 1.5f;
+
+    /// <summary>...and at least this share of the skill's loudest moment (not a quiet echo).</summary>
+    private const float FillLoudness = 0.4f;
+
+    /// <summary>Peaks in the sound that are clearly hits, not echoes or texture.</summary>
+    private static List<HitPoint> ClearSoundHits(Audio.SkillSound sound, float threshold)
+    {
+        var (peaks, e) = Audio.SoundSegmenter.FindPeaks(sound, threshold * FillProminence);
+        var loudest = e.Length == 0 ? 0f : e.Max();
+        return peaks
+            .Where(p => e[p.Index] >= loudest * FillLoudness)
+            .Select(p =>
+            {
+                var ms = p.Index * Audio.SoundEnvelope.StepMs;
+                return new HitPoint((int)MathF.Round(ms / TmbParser.MsPerFrame), Math.Clamp(0.4f + p.Prominence * 1.5f, 0f, 1f), HitSource.SoundPeak, ms);
+            })
+            .ToList();
     }
 
     /// <summary>The clear peaks in a skill's sound, as hits.</summary>
@@ -165,8 +208,12 @@ public static class AutoPattern
     /// <summary>A hit is always felt: its stronger motor gets at least this (%).</summary>
     private const int MinHitLevel = 25;
 
-    /// <summary>The last hit: at least this on both motors.</summary>
-    private const int FinisherLevel = 90;
+    /// <summary>A hit where the skill is silent: a light tap at the minimum level.</summary>
+    private static void SetSilent(VibrationPulse p)
+    {
+        p.Strong = (int)MathF.Round(MinHitLevel * 0.8f);
+        p.Weak = MinHitLevel;
+    }
 
     /// <summary>Each hit pulse as strong as the sound is loud at that hit (bass: strong motor, the rest: weak motor).</summary>
     private static void ApplySoundLevels(List<VibrationPulse> pulses, List<HitPoint> hits, Audio.SkillSound sound)
@@ -178,7 +225,11 @@ public static class AutoPattern
             var a = Math.Max(0, (at - LevelBeforeMs) / step);
             var b = Math.Min(sound.Low.Length, (at + LevelAfterMs) / step + 1);
             if (a >= b)
-                continue; // no sound at this hit: keep the animation-based level
+            {
+                // The skill's sound is over at this hit: silent, so only a light tap.
+                SetSilent(pulses[i]);
+                continue;
+            }
 
             float low = 0, high = 0;
             for (var k = a; k < b; k++)
@@ -191,7 +242,11 @@ public static class AutoPattern
             var weak = (int)MathF.Round(high * 100);
             var top = Math.Max(strong, weak);
             if (top <= 0)
+            {
+                SetSilent(pulses[i]);
                 continue;
+            }
+
             if (top < MinHitLevel)
             {
                 strong = (int)MathF.Round(strong * MinHitLevel / (float)top);
@@ -201,28 +256,6 @@ public static class AutoPattern
             pulses[i].Strong = Math.Clamp(strong, 0, 100);
             pulses[i].Weak = Math.Clamp(weak, 0, 100);
         }
-    }
-
-    /// <summary>The last hit is the skill's strongest pulse: at least <see cref="FinisherLevel"/> on both motors.</summary>
-    private static void MakeLastHitLoud(List<VibrationPulse> pulses, List<HitPoint> hits)
-    {
-        if (pulses.Count == 0)
-            return;
-
-        // The pulse on the last hit (or the last pulse, if no hit has one).
-        var target = pulses[^1];
-        if (hits.Count > 0)
-        {
-            var lastHit = StartMs(hits[^1]);
-            var near = pulses.OrderBy(p => Math.Abs(p.DelayMs - lastHit)).First();
-            if (Math.Abs(near.DelayMs - lastHit) <= 150)
-                target = near;
-        }
-
-        var maxStrong = pulses.Max(p => p.Strong);
-        var maxWeak = pulses.Max(p => p.Weak);
-        target.Strong = Math.Max(target.Strong, Math.Max(maxStrong, FinisherLevel));
-        target.Weak = Math.Max(target.Weak, Math.Max(maxWeak, FinisherLevel));
     }
 
     /// <summary>A hit this close (ms) to a sound clip counts as covered by it.</summary>

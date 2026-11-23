@@ -6,7 +6,8 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 
 - **After you log in,** the plugin analyses the animation timeline (`.tmb`) of every skill of every job. It starts with your current job. If you use a mod for an animation, Penumbra hands it the modded file, so the timing matches what you see. It saves one vibration pattern per skill. Skills that already have a pattern are left alone.
 - **Hits decide when, the sound decides how strong.** Every hit of the skill's animation gets a pulse. Its strength comes from how loud the skill's sound is at that hit, read through Penumbra so mod sounds count. Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
-- **The last hit is always the strongest:** at least 90% on both motors, fading out.
+- **Strength always comes from the sound, the last hit included:** a louder sound gives a stronger vibration. A very quiet or silent hit still gives a light 25% tap. The last hit keeps a longer fade-out.
+- **The sound fills in missing hits:** the sound is analysed even when the animation has markers. If it shows more clear hits than there are markers (say 2 markers, but 3 clear hits heard), the missing ones are added from its peaks. Only peaks at least 40% as loud as the skill's loudest moment count, not quiet echoes. This is on by default (Settings → Hit detection → "Add hits the markers miss, from the sound").
 - **Optional, build from sound bumps instead** (Settings → Sound): each clear bump in the sound becomes a solid block at the sound's level with a short fade-out, and the sound's background doesn't vibrate. Its settings:
   - **Threshold:** how far a bump must stand out.
   - **Fade-out:** the length of the fade after each block.
