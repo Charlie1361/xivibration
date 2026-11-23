@@ -47,6 +47,12 @@ public sealed class PulseTimelineEditor
         /// <summary>The skill's sounds as motor levels (10 ms steps), drawn behind the clips.</summary>
         public Audio.SkillSound? Sound { get; init; }
 
+        /// <summary>Moments with cues that the hit rules left out (drawn faintly).</summary>
+        public IReadOnlyList<HitPoint> Rejected { get; init; } = Array.Empty<HitPoint>();
+
+        /// <summary>The hit rules in words, for the tooltip of a left-out moment.</summary>
+        public string RuleText { get; init; } = string.Empty;
+
         /// <summary>Where sounds start and end (ms); clips snap to them.</summary>
         public IReadOnlyList<int> SoundMarks { get; init; } = Array.Empty<int>();
     }
@@ -156,7 +162,7 @@ public sealed class PulseTimelineEditor
         var totalH = badgeH + laneH * 2 + laneGap + axisH;
 
         var lastEnd = shown.Count == 0 ? 0 : shown.Max(p => p.DelayMs + offset + p.DurationMs);
-        var lastHit = input.Hits.Count == 0 ? 0 : input.Hits.Max(h => h.Frame * TmbParser.MsPerFrame);
+        var lastHit = input.Hits.Count == 0 ? 0 : input.Hits.Max(h => (float)h.Ms);
         var fitSpan = Math.Max(500f, (float)(Math.Ceiling((Math.Max(lastEnd, lastHit) + 150) / 250.0) * 250));
         var viewSpan = fitSpan / this.zoom;
         this.scrollMs = Math.Clamp(this.scrollMs, 0, Math.Max(0, fitSpan - viewSpan));
@@ -243,11 +249,23 @@ public sealed class PulseTimelineEditor
         }
 
         // ---- waypoints (behind the clips)
-        var hitMs = input.Hits.Select(h => h.Frame * TmbParser.MsPerFrame).ToList();
+        var hitMs = input.Hits.Select(h => (float)h.Ms).ToList();
         for (var i = 0; i < hitMs.Count; i++)
         {
             var x = X(hitMs[i]);
             dl.AddLine(new Vector2(x, strongTop), new Vector2(x, lanesBottom), ImGui.GetColorU32(WaypointColor(input.Hits[i].Sources) with { W = 0.55f }), 1.5f * scale);
+        }
+
+        // ---- moments the hit rules left out: faint, with a tooltip saying why
+        var hoveredRejected = -1;
+        for (var i = 0; i < input.Rejected.Count; i++)
+        {
+            var x = X(input.Rejected[i].Ms);
+            var grey = ImGui.GetColorU32(new Vector4(0.6f, 0.6f, 0.6f, 0.35f));
+            dl.AddLine(new Vector2(x, strongTop), new Vector2(x, lanesBottom), grey, 1f);
+            dl.AddCircle(new Vector2(x, origin.Y + badgeH / 2f), 5f * scale, grey, 12, 1.5f);
+            if (hovered && Math.Abs(mouse.X - x) <= 6 * scale && mouse.Y >= origin.Y && mouse.Y <= origin.Y + badgeH)
+                hoveredRejected = i;
         }
 
         // ---- clips
@@ -281,6 +299,12 @@ public sealed class PulseTimelineEditor
             dl.AddText(c - ts / 2f, ImGui.GetColorU32(new Vector4(0.08f, 0.08f, 0.1f, 1f)), label);
             if (hovered && this.drag == DragMode.None && Math.Abs(mouse.X - x) <= badgeR + 1 && mouse.Y >= origin.Y && mouse.Y <= origin.Y + badgeH)
                 hoveredHit = i;
+        }
+
+        if (hoveredHit < 0 && hoveredRejected >= 0)
+        {
+            var r = input.Rejected[hoveredRejected];
+            ImGui.SetTooltip($"Left out at {r.Ms} ms (frame {r.Frame})\nHad: {SourceText(r.Sources)}\nThe hit rules need: {input.RuleText}");
         }
 
         if (hoveredHit >= 0)
@@ -466,6 +490,7 @@ public sealed class PulseTimelineEditor
         if (s.HasFlag(HitSource.BuiltInVibration)) return new(0.78f, 0.62f, 1f, 1f);
         if ((s & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) return new(0.95f, 0.95f, 0.95f, 1f);
         if (s.HasFlag(HitSource.CasterVfx)) return new(0.45f, 0.88f, 0.8f, 1f);
+        if (s.HasFlag(HitSource.SoundPeak)) return new(1f, 0.55f, 0.78f, 1f);
         return new(0.7f, 0.7f, 0.7f, 1f);
     }
 
@@ -480,6 +505,7 @@ public sealed class PulseTimelineEditor
         if (s.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
         if (s.HasFlag(HitSource.FlyText)) parts.Add("damage number");
         if (s.HasFlag(HitSource.CasterVfx)) parts.Add("effect beat");
+        if (s.HasFlag(HitSource.SoundPeak)) parts.Add("peak in the sound (no hit markers)");
         return parts.Count == 0 ? "default timing (no animation data)" : string.Join(", ", parts);
     }
 

@@ -509,6 +509,8 @@ public sealed class MainWindow : Window, IDisposable
             AutoPulses = plan.Auto.Pulses,
             Sound = plan.Auto.Sound,
             SoundMarks = plan.Auto.SoundMarks ?? new List<int>(),
+            Rejected = plan.Auto.Rejected ?? new List<HitPoint>(),
+            RuleText = this.RuleText(),
             MakeEditable = () => this.CreateCustomRule(plan, preview, builtIn).Pulses,
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
@@ -613,7 +615,7 @@ public sealed class MainWindow : Window, IDisposable
 
         // Anchor
         ImGui.SetNextItemWidth(200 * scale);
-        var firstHit = plan.Auto.Hits.Count > 0 ? (int)MathF.Round(plan.Auto.Hits[0].Frame * TmbParser.MsPerFrame) : 0;
+        var firstHit = plan.Auto.Hits.Count > 0 ? plan.Auto.Hits[0].Ms : 0;
         using (var combo = ImRaii.Combo("Delays count from", rule.Anchor == PulseAnchor.FirstHit ? "the first hit" : "the animation start"))
         {
             if (combo)
@@ -644,6 +646,8 @@ public sealed class MainWindow : Window, IDisposable
             AutoPulses = plan.Auto.Pulses,
             Sound = plan.Auto.Sound,
             SoundMarks = plan.Auto.SoundMarks ?? new List<int>(),
+            Rejected = plan.Auto.Rejected ?? new List<HitPoint>(),
+            RuleText = this.RuleText(),
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
         });
@@ -985,14 +989,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Separator();
         this.Check("Vibrate every skill automatically, on its hits", this.Config.AutoEnabled, v => this.Config.AutoEnabled = v);
 
-        this.Check("Use hit timings from the MultiHit plugin", this.Config.UseMultiHit, v => this.Config.UseMultiHit = v);
-        ImGui.SameLine();
-        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-        {
-            var mh = this.plugin.MultiHit;
-            mh.Refresh();
-            ImGui.TextUnformatted(mh.Available ? $"({mh.Count} skills found)" : "(MultiHit not installed)");
-        }
+        this.DrawHitDetection(scale);
 
         this.Check("Replace built-in vibration from other mods", this.Config.ReplaceModVibration, v => this.Config.ReplaceModVibration = v);
         if (ImGui.IsItemHovered())
@@ -1163,6 +1160,152 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextWrapped("Commands: /xivib (open), /xivib on | off | toggle | test | stop");
     }
 
+    private static readonly (HitSource Source, string Label, string Tip)[] HitCues =
+    {
+        (HitSource.Flinch, "Target flinches", "The target's hit reaction in the animation (C067). The most reliable marker of an impact."),
+        (HitSource.TargetSound, "Hit sound on the target", "A sound played on the target (..._t.scd, ..._mt.scd)."),
+        (HitSource.TargetVfx, "Effect on the target", "An effect spawned on the target (..._t0p.avfx). Often starts before or after the real impact."),
+        (HitSource.ExtraStrike, "Follow-up strike sound", "Sounds like ..._add.scd: often the only marker of a skill's last strike."),
+        (HitSource.BuiltInVibration, "Built-in vibration (mods)", "Vibration entries (C120) a mod placed on the hits."),
+        (HitSource.MultiHit, "MultiHit table", "Per-hit timings from the MultiHit plugin's config, made for specific mods."),
+        (HitSource.FlyText, "Damage number", "When the damage number pops. A weak cue: it's often a few frames off the visible impact."),
+        (HitSource.CasterVfx, "Effect beats (buffs, heals)", "For skills that don't hit a target: the beats of the caster's effects. A weak cue."),
+    };
+
+    /// <summary>The hit rules in words.</summary>
+    private string RuleText()
+    {
+        var h = this.Config.Hits;
+        var names = HitCues.Where(c => h.Uses(c.Source)).Select(c => c.Label.ToLowerInvariant()).ToList();
+        var list = names.Count == 0 ? "(no cues chosen)" : string.Join(", ", names);
+        return h.Match switch
+        {
+            HitMatch.AtLeast => $"at least {h.MinMatches} of: {list}, within {h.WindowFrames} frames",
+            HitMatch.All => $"all of: {list}, within {h.WindowFrames} frames",
+            _ => $"any of: {list}",
+        };
+    }
+
+    private void DrawHitDetection(float scale)
+    {
+        var h = this.Config.Hits;
+        var rebuild = false;
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Hit detection");
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+            ImGui.TextWrapped("Which cues in the animation make a hit, and how many must meet at the same moment. Skills without any hit markers use the peaks in their sound as hits (Sound > Threshold sets how clear a peak must be).");
+
+        var ignore = h.IgnoreTargetEffect;
+        if (ImGui.Checkbox("Ignore \"effect on the target\"##hits", ref ignore))
+        {
+            h.IgnoreTargetEffect = ignore;
+            rebuild = true;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Effects on the target often start before or after the real impact, so they're left out by default.");
+
+        foreach (var (source, label, tip) in HitCues)
+        {
+            using (ImRaii.Disabled(source == HitSource.TargetVfx && h.IgnoreTargetEffect))
+            {
+                var on = (h.Sources & source) != 0;
+                if (ImGui.Checkbox($"{label}##cue{(int)source}", ref on))
+                {
+                    h.Sources = on ? h.Sources | source : h.Sources & ~source;
+                    rebuild = true;
+                }
+            }
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip(tip);
+
+            if (source == HitSource.MultiHit)
+            {
+                ImGui.SameLine();
+                using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
+                var mh = this.plugin.MultiHit;
+                mh.Refresh();
+                ImGui.TextUnformatted(mh.Available ? $"({mh.Count} skills found)" : "(MultiHit not installed)");
+            }
+        }
+
+        ImGui.SetNextItemWidth(260 * scale);
+        var modes = new[] { "any one of these", "at least N at the same moment", "all of these at the same moment" };
+        var mode = (int)h.Match;
+        using (var combo = ImRaii.Combo("A hit needs##hits", modes[Math.Clamp(mode, 0, 2)]))
+        {
+            if (combo)
+            {
+                for (var i = 0; i < modes.Length; i++)
+                {
+                    if (ImGui.Selectable(modes[i], i == mode))
+                    {
+                        h.Match = (HitMatch)i;
+                        rebuild = true;
+                    }
+                }
+            }
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("\"All\" and \"at least N\" only count cue types the skill's animation actually has,\n" +
+                             "so a skill without built-in vibration or a MultiHit table isn't silenced by them.");
+        }
+
+        if (h.Match == HitMatch.AtLeast)
+        {
+            var chosen = Math.Max(1, System.Numerics.BitOperations.PopCount((uint)h.EffectiveSources));
+            ImGui.SetNextItemWidth(160 * scale);
+            var n = Math.Clamp(h.MinMatches, 1, chosen);
+            if (ImGui.SliderInt("N##hits", ref n, 1, chosen))
+            {
+                h.MinMatches = n;
+                this.MarkDirty();
+            }
+
+            rebuild |= ImGui.IsItemDeactivatedAfterEdit();
+        }
+
+        ImGui.SetNextItemWidth(160 * scale);
+        var win = h.WindowFrames;
+        if (ImGui.SliderInt("Same moment within##hits", ref win, 1, 8, $"%d frames ({win * 33} ms)"))
+        {
+            h.WindowFrames = win;
+            this.MarkDirty();
+        }
+
+        rebuild |= ImGui.IsItemDeactivatedAfterEdit();
+
+        var fb = h.FallbackToDamageNumber;
+        if (ImGui.Checkbox("If nothing matches, use the damage number##hits", ref fb))
+        {
+            h.FallbackToDamageNumber = fb;
+            rebuild = true;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Used when a skill has no matching cues and no readable sound, so every skill still vibrates.");
+
+        if (ImGui.Button("Reset hit detection"))
+        {
+            this.Config.Hits = new HitDetection();
+            rebuild = true;
+        }
+
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+            ImGui.TextWrapped($"A hit needs {this.RuleText()}.  {this.plugin.Analysis.OriginSummary}");
+
+        if (rebuild)
+        {
+            this.MarkDirty();
+            this.SaveNow();
+            this.plugin.Analysis.ReanalyseAll();
+        }
+    }
+
     private void DrawLastSkill()
     {
         var plan = this.plugin.LastPlan;
@@ -1239,10 +1382,11 @@ public sealed class MainWindow : Window, IDisposable
             "have a pattern are not touched.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Hits decide when, the sound decides how strong. Every hit of the animation (the target's hit reaction, effects and sounds on " +
-            "the target, MultiHit tables, follow-up strikes) gets a pulse, as strong as the skill's sound is loud at that moment: bass drives the " +
-            "strong motor, crisp sounds the weak one. The last hit is always the strongest. Buffs and heals follow their effect beats. " +
-            "Optionally (Settings > Sound), patterns can be built from the sound's bumps instead.");
+            "Hits decide when, the sound decides how strong. You choose which animation cues make a hit and how many must meet at the " +
+            "same moment (Settings > Hit detection; MultiHit is off and 'effect on the target' is ignored by default). Skills without any hit " +
+            "markers use the peaks in their sound as hits. Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
+            "strong motor, crisp sounds the weak one. The last hit is always the strongest. Optionally (Settings > Sound), patterns can be " +
+            "built from the sound's bumps instead.");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +

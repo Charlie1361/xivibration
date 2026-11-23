@@ -5,6 +5,24 @@ using XIVibration.Timeline;
 
 namespace XIVibration;
 
+/// <summary>Where a skill's hits came from.</summary>
+public enum HitOrigin
+{
+    /// <summary>Real markers in the animation (flinch, hit sounds, MultiHit, ...).</summary>
+    Markers,
+
+    /// <summary>No markers: the peaks in the skill's sound.</summary>
+    SoundPeaks,
+
+    /// <summary>Only weak cues: damage number or effect beats.</summary>
+    WeakCues,
+
+    /// <summary>Nothing found: the damage number frame.</summary>
+    DamageNumber,
+
+    None,
+}
+
 public sealed record AutoResult(
     List<VibrationPulse> Pulses,
     float Scale,
@@ -13,25 +31,40 @@ public sealed record AutoResult(
     List<VibrationPulse> BuiltInPreview,
     Audio.SkillSound? Sound = null,
     List<int>? SoundMarks = null,
-    bool FromSound = false)
+    bool FromSound = false,
+    List<HitPoint>? Rejected = null,
+    HitOrigin Origin = HitOrigin.Markers)
 {
-    public List<float> HitMs => this.Hits.Select(h => h.Frame * TmbParser.MsPerFrame).ToList();
+    public List<float> HitMs => this.Hits.Select(h => (float)h.Ms).ToList();
 
     public string SourceText
     {
         get
         {
             var all = this.Hits.Aggregate(HitSource.None, (a, h) => a | h.Sources);
-            if (all == HitSource.None && !this.FromSound)
-                return "no animation data, default timing";
             var parts = new List<string>();
-            if (this.FromSound) parts.Add("the skill's sounds");
-            if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
-            if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
-            if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
-            if (all.HasFlag(HitSource.FlyText)) parts.Add("damage number");
-            if (all.HasFlag(HitSource.CasterVfx)) parts.Add("effect beats");
-            return string.Join(", ", parts);
+            if (this.FromSound) parts.Add("bumps in the sound");
+            switch (this.Origin)
+            {
+                case HitOrigin.SoundPeaks:
+                    parts.Add("no hit markers: peaks in the sound");
+                    break;
+                case HitOrigin.DamageNumber:
+                    parts.Add("nothing matched: damage number");
+                    break;
+                case HitOrigin.None:
+                    parts.Add("nothing matched the hit rules");
+                    break;
+                default:
+                    if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
+                    if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
+                    if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
+                    if (all.HasFlag(HitSource.FlyText)) parts.Add("damage number");
+                    if (all.HasFlag(HitSource.CasterVfx)) parts.Add("effect beats");
+                    break;
+            }
+
+            return parts.Count == 0 ? "no animation data" : string.Join(", ", parts);
         }
     }
 }
@@ -58,9 +91,41 @@ public static class AutoPattern
     {
         var (profile, scale) = Pick(info, cfg.AutoStrength);
         var hostile = info?.CanTargetHostile ?? true;
-        var hits = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames);
-        var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
         var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
+        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits);
+
+        // Where the hits come from: real markers, else the peaks in the sound, else weak cues
+        // (damage number, effect beats), else the damage number frame.
+        List<HitPoint> hits;
+        HitOrigin origin;
+        List<HitPoint> soundPeaks;
+        if (analysis.HasMarkers)
+        {
+            hits = analysis.Hits;
+            origin = HitOrigin.Markers;
+        }
+        else if (sound != null && (soundPeaks = SoundPeakHits(sound, cfg.Sound.Threshold)).Count > 0)
+        {
+            hits = soundPeaks;
+            origin = HitOrigin.SoundPeaks;
+        }
+        else if (analysis.Hits.Count > 0)
+        {
+            hits = analysis.Hits;
+            origin = HitOrigin.WeakCues;
+        }
+        else if (cfg.Hits.FallbackToDamageNumber)
+        {
+            hits = new() { new HitPoint(analysis.FlyTextFrame >= 0 ? analysis.FlyTextFrame : 10, 1f, HitSource.FlyText) };
+            origin = HitOrigin.DamageNumber;
+        }
+        else
+        {
+            hits = new();
+            origin = HitOrigin.None;
+        }
+
+        var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
 
         // Hits decide when; the sound decides how strong.
         if (sound != null)
@@ -74,12 +139,23 @@ public static class AutoPattern
             {
                 var pulses = cfg.Sound.PulseSilentHits ? MergeWithHits(seg.Clips, hits, hitPulses) : seg.Clips;
                 MakeLastHitLoud(pulses, hits);
-                return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true);
+                return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true, analysis.Rejected, origin);
             }
         }
 
         MakeLastHitLoud(hitPulses, hits);
-        return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound);
+        return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound, null, false, analysis.Rejected, origin);
+    }
+
+    /// <summary>The clear peaks in a skill's sound, as hits.</summary>
+    private static List<HitPoint> SoundPeakHits(Audio.SkillSound sound, float threshold)
+    {
+        var (peaks, _) = Audio.SoundSegmenter.FindPeaks(sound, threshold);
+        return peaks.Select(p =>
+        {
+            var ms = p.Index * Audio.SoundEnvelope.StepMs;
+            return new HitPoint((int)MathF.Round(ms / TmbParser.MsPerFrame), Math.Clamp(0.4f + p.Prominence * 1.5f, 0f, 1f), HitSource.SoundPeak, ms);
+        }).ToList();
     }
 
     /// <summary>Loudness is read from a little before the hit to a little after (the sound's attack can lag).</summary>
@@ -262,7 +338,7 @@ public static class AutoPattern
         return pulses;
     }
 
-    private static int StartMs(HitPoint hit) => (int)MathF.Round(hit.Frame * TmbParser.MsPerFrame);
+    private static int StartMs(HitPoint hit) => hit.Ms;
 
     private static (Profile Profile, float Scale) Pick(ActionInfo? info, AutoStrengths s)
     {

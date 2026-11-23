@@ -41,6 +41,25 @@ public sealed class SkillAnalysis
 
     public string Status { get; private set; } = "Waiting for login";
 
+    private readonly Dictionary<HitOrigin, int> origins = new();
+
+    /// <summary>How the last analysis found its hits, e.g. "1200 from markers, 90 from sound peaks".</summary>
+    public string OriginSummary
+    {
+        get
+        {
+            if (this.origins.Count == 0)
+                return string.Empty;
+            var parts = new List<string>();
+            if (this.origins.TryGetValue(HitOrigin.Markers, out var m)) parts.Add($"{m} skills from markers");
+            if (this.origins.TryGetValue(HitOrigin.SoundPeaks, out var p)) parts.Add($"{p} from peaks in the sound");
+            if (this.origins.TryGetValue(HitOrigin.WeakCues, out var w)) parts.Add($"{w} from weak cues");
+            if (this.origins.TryGetValue(HitOrigin.DamageNumber, out var d)) parts.Add($"{d} from the damage number");
+            if (this.origins.TryGetValue(HitOrigin.None, out var z)) parts.Add($"{z} without hits");
+            return "Last analysis: " + string.Join(", ", parts) + ".";
+        }
+    }
+
     /// <summary>Check every skill again now (for example after changing mods). The user's own patterns are kept.</summary>
     public void ReanalyseAll()
     {
@@ -113,6 +132,17 @@ public sealed class SkillAnalysis
             {
                 Plugin.Log.Warning(ex, $"Could not analyse action {id}");
             }
+
+            // Every skill counts in the summary, rebuilt or not (results are cached).
+            try
+            {
+                var origin = this.plugin.BuildAuto(id, this.plugin.Timelines.ForAction(id)).Origin;
+                this.origins[origin] = this.origins.GetValueOrDefault(origin) + 1;
+            }
+            catch
+            {
+                // only the summary
+            }
         }
 
         this.Status = $"Analysing animations... {this.Done}/{this.Total}";
@@ -130,7 +160,7 @@ public sealed class SkillAnalysis
     {
         var mh = this.plugin.MultiHitFor(actionId);
         var mhText = mh == null ? "-" : string.Join(",", mh.Hits.Select(h => $"{h.Frame}:{h.Percent}")) + $"/{mh.FinalDelayFrames}";
-        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}|{this.plugin.Config.Sound.Key}");
+        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}|{this.plugin.Config.Sound.Key}|{this.plugin.Config.Hits.Key}");
     }
 
     private bool IsOutdated(uint actionId, ActionRule rule)
@@ -165,6 +195,7 @@ public sealed class SkillAnalysis
     {
         this.queued = true;
         this.created = 0;
+        this.origins.Clear();
         this.refreshed = 0;
         var catalog = this.plugin.Catalog;
         var cfg = this.plugin.Config;

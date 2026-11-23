@@ -130,7 +130,7 @@ public sealed class Plugin : IDalamudPlugin
     private void OnTerritoryChanged(uint territory) => this.Timelines.Clear();
 
     public HitAnalyzer.MultiHitTable? MultiHitFor(uint actionId)
-        => this.Config.UseMultiHit && this.MultiHit.TryGet(actionId, out var t) ? t : null;
+        => this.Config.Hits.Uses(HitSource.MultiHit) && this.MultiHit.TryGet(actionId, out var t) ? t : null;
 
     private readonly Dictionary<(uint Action, uint Timeline), (int Key, AutoResult Result)> autoCache = new();
 
@@ -141,7 +141,7 @@ public sealed class Plugin : IDalamudPlugin
         var key = HashCode.Combine(
             this.Timelines.Generation,
             this.MultiHit.Version,
-            this.Config.UseMultiHit,
+            this.Config.Hits.Key,
             HashCode.Combine(s.Weaponskill, s.Spell, s.Ability, s.Support, s.LimitBreak),
             this.Config.Sound.Key);
         if (this.autoCache.TryGetValue((actionId, tl.TimelineId), out var c) && c.Key == key)
@@ -167,7 +167,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (this.Config.Rules.TryGetValue(actionId, out var rule))
         {
-            var firstHit = auto.Hits.Count > 0 ? (int)MathF.Round(auto.Hits[0].Frame * TmbParser.MsPerFrame) : 0;
+            var firstHit = auto.Hits.Count > 0 ? auto.Hits[0].Ms : 0;
             var offset = rule.Anchor == PulseAnchor.FirstHit ? firstHit : 0;
             var pulses = rule.Pulses.Select(p =>
             {

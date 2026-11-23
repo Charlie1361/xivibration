@@ -12,18 +12,17 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
   - **Fade-out:** the length of the fade after each block.
   - **Join bumps closer than:** turns nearby bumps into one block.
   - **Also pulse on hits without a sound bump.**
-- **Hits come from the animation:**
-  - the target's hit reaction (Flinch)
-  - effects and sounds that land on the target
-  - follow-up strike sounds
-  - vibration the animation already has
-  - the parts it plays from other timelines
+- **You choose what counts as a hit** (Settings → Hit detection):
+  - Cues: target flinches, hit sound on the target, effect on the target, follow-up strike sound, built-in vibration (mods), MultiHit table, damage number, effect beats (buffs and heals).
+  - "Effect on the target" is ignored by default, because it often starts before or after the real impact. **MultiHit is off by default.**
+  - A hit needs: **any one** of the chosen cues, **at least N** at the same moment, or **all** of them at the same moment. "Same moment within" sets the window in frames. Cue types a skill's animation doesn't have don't count, so a strict rule doesn't silence it.
+  - Moments the rules leave out show as faint grey markers on the timeline, with a tooltip saying why.
+- **No hit markers: the sound's peaks are the hits.** Some skills have no real markers, only a damage number or effect beats. For those, the clear peaks in their sound become the hits (pink waypoints). Sound → Threshold sets how clear a peak must be. Without a readable sound, the damage number or effect beats are used.
+- **MultiHit tables** (when chosen): each hit in the table gets its own pulse, including the final hit when the table doesn't add up to 100%. Tables are matched by animation, so every version of a skill gets them.
 
-  Buffs and heals without sounds follow their effect beats.
-- **MultiHit tables** (optional): if the MultiHit plugin has a hit table for a skill, each hit in it gets its own pulse too, harder for hits that do more damage. That includes the final hit when the table doesn't add up to 100%. Tables are matched by animation, so every version of a skill gets them.
 - **Timed to the real animation:** a pattern starts when the animation actually starts on your character, not when the server message arrives, and it plays faster or slower along with the animation. Hits closer than 90 ms join into one continuous pulse so they can be felt.
 - **Patterns stay current:** generated patterns are rebuilt automatically when a skill's animation changes (another mod or option) or the analysis improves. Patterns you edited are never touched.
-- **Strength follows the skill type:** weaponskills, spells, abilities (long cooldowns hit harder), buffs and heals (lighter), and limit breaks. The last hit of an attack is the finisher.
+- **Without a readable sound, strength follows the skill type:** weaponskills, spells, abilities (long cooldowns hit harder), buffs and heals (lighter), and limit breaks. The last hit of an attack is the finisher.
 - **The vibration goes through the game's own controller function,** so it works with every controller the game supports and follows the game's vibration setting.
 - **Only your character vibrates.** Mods apply to every character's animations, so a mod with built-in vibration would also make the game rumble when other players or NPCs near you use that skill. The plugin lets the game's own vibration through only while one of your skills is playing (Settings → "Only my character's animations may vibrate", on by default).
 - **Animations that already vibrate on their own are left alone.** Turn on *Replace built-in vibration* in Settings to use the plugin's pattern for those too.

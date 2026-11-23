@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Configuration;
+using XIVibration.Timeline;
 
 namespace XIVibration;
 
@@ -89,6 +90,45 @@ public sealed class AutoStrengths
     public float LimitBreak { get; set; } = 1f;
 }
 
+/// <summary>How many of the chosen cues must meet at a moment for it to be a hit.</summary>
+public enum HitMatch
+{
+    Any,
+    AtLeast,
+    All,
+}
+
+/// <summary>Which animation cues make a hit, and how many must coincide.</summary>
+[Serializable]
+public sealed class HitDetection
+{
+    public const HitSource DefaultSources = HitSource.Flinch | HitSource.TargetSound | HitSource.ExtraStrike
+                                            | HitSource.BuiltInVibration | HitSource.FlyText | HitSource.CasterVfx;
+
+    public HitSource Sources { get; set; } = DefaultSources;
+
+    /// <summary>Target effects often start before or after the real impact: left out by default.</summary>
+    public bool IgnoreTargetEffect { get; set; } = true;
+
+    public HitMatch Match { get; set; } = HitMatch.Any;
+
+    public int MinMatches { get; set; } = 2;
+
+    /// <summary>Cues this close (frames) are the same moment.</summary>
+    public int WindowFrames { get; set; } = 3;
+
+    /// <summary>When nothing else is found, vibrate on the damage number.</summary>
+    public bool FallbackToDamageNumber { get; set; } = true;
+
+    [Newtonsoft.Json.JsonIgnore]
+    public HitSource EffectiveSources => this.IgnoreTargetEffect ? this.Sources & ~HitSource.TargetVfx : this.Sources;
+
+    public bool Uses(HitSource s) => (this.EffectiveSources & s) != 0;
+
+    [Newtonsoft.Json.JsonIgnore]
+    public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}|{this.FallbackToDamageNumber}";
+}
+
 /// <summary>How a skill's sounds turn into vibration clips.</summary>
 [Serializable]
 public sealed class SoundTuning
@@ -119,7 +159,7 @@ public sealed class SoundTuning
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -152,8 +192,10 @@ public sealed class Configuration : IPluginConfiguration
 
     public SoundTuning Sound { get; set; } = new();
 
-    /// <summary>Use per-hit timings from the MultiHit plugin's config when present.</summary>
-    public bool UseMultiHit { get; set; } = true;
+    public HitDetection Hits { get; set; } = new();
+
+    // v3 leftover: MultiHit is now chosen in Hits.Sources (off by default). Kept so old files load.
+    public bool UseMultiHit { get; set; }
 
     /// <summary>
     /// Off by default: skills whose animation already vibrates (built-in C120 entries)

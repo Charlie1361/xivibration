@@ -160,59 +160,12 @@ public static class SoundSegmenter
         if (n == 0)
             return new Result(new(), new());
 
-        // Loudness, smoothed.
-        var raw = new float[n];
-        for (var i = 0; i < n; i++)
-            raw[i] = Math.Max(sound.Low[i], sound.High[i]);
-        var half = Math.Max(1, SmoothMs / step / 2);
-        var e = new float[n];
-        for (var i = 0; i < n; i++)
-        {
-            float sum = 0;
-            var c = 0;
-            for (var k = Math.Max(0, i - half); k <= Math.Min(n - 1, i + half); k++)
-            {
-                sum += raw[k];
-                c++;
-            }
-
-            e[i] = sum / c;
-        }
-
-        // Bumps: local peaks that rise at least the threshold above the dips on both sides
-        // (prominence, looking at most ProminenceWindowMs each way).
-        var w = ProminenceWindowMs / step;
+        // Bumps: the clear peaks; each block covers the top of its bump.
+        var (peaks, e) = FindPeaks(sound, tuning.Threshold);
         var regions = new List<(int Start, int End)>();
-        for (var i = 0; i < n; i++)
+        foreach (var (i, prominence) in peaks)
         {
-            var peak = e[i];
-            if (peak < Floor || (i > 0 && e[i - 1] >= peak) || (i + 1 < n && e[i + 1] > peak))
-                continue;
-
-            var leftMin = peak;
-            for (var k = i - 1; k >= Math.Max(-1, i - w); k--)
-            {
-                var v = k < 0 ? 0f : e[k];
-                if (v > peak)
-                    break;
-                leftMin = Math.Min(leftMin, v);
-            }
-
-            var rightMin = peak;
-            for (var k = i + 1; k <= Math.Min(n, i + w); k++)
-            {
-                var v = k >= n ? 0f : e[k];
-                if (v > peak)
-                    break;
-                rightMin = Math.Min(rightMin, v);
-            }
-
-            var prominence = peak - Math.Max(leftMin, rightMin);
-            if (prominence < tuning.Threshold)
-                continue;
-
-            // The block covers the top of the bump.
-            var level = peak - prominence * TopShare;
+            var level = e[i] - prominence * TopShare;
             var s0 = i;
             while (s0 > 0 && e[s0 - 1] >= level)
                 s0--;
@@ -292,6 +245,68 @@ public static class SoundSegmenter
         Tidy(pulses);
         var marks = pulses.SelectMany(p => new[] { p.DelayMs, p.DelayMs + p.DurationMs }).Distinct().ToList();
         return new Result(pulses, marks);
+    }
+
+    /// <summary>
+    /// The clear peaks of a skill's sound: local maxima of the smoothed loudness that rise at least
+    /// <paramref name="threshold"/> above the dips on both sides (prominence, looking at most
+    /// <see cref="ProminenceWindowMs"/> each way). Returns the peaks (10 ms step index, prominence)
+    /// and the smoothed loudness.
+    /// </summary>
+    public static (List<(int Index, float Prominence)> Peaks, float[] Loudness) FindPeaks(SkillSound sound, float threshold)
+    {
+        const int step = SoundEnvelope.StepMs;
+        var n = sound.Low.Length;
+        var peaks = new List<(int, float)>();
+        var raw = new float[n];
+        for (var i = 0; i < n; i++)
+            raw[i] = Math.Max(sound.Low[i], sound.High[i]);
+        var half = Math.Max(1, SmoothMs / step / 2);
+        var e = new float[n];
+        for (var i = 0; i < n; i++)
+        {
+            float sum = 0;
+            var c = 0;
+            for (var k = Math.Max(0, i - half); k <= Math.Min(n - 1, i + half); k++)
+            {
+                sum += raw[k];
+                c++;
+            }
+
+            e[i] = sum / c;
+        }
+
+        var w = ProminenceWindowMs / step;
+        for (var i = 0; i < n; i++)
+        {
+            var peak = e[i];
+            if (peak < Floor || (i > 0 && e[i - 1] >= peak) || (i + 1 < n && e[i + 1] > peak))
+                continue;
+
+            var leftMin = peak;
+            for (var k = i - 1; k >= Math.Max(-1, i - w); k--)
+            {
+                var v = k < 0 ? 0f : e[k];
+                if (v > peak)
+                    break;
+                leftMin = Math.Min(leftMin, v);
+            }
+
+            var rightMin = peak;
+            for (var k = i + 1; k <= Math.Min(n, i + w); k++)
+            {
+                var v = k >= n ? 0f : e[k];
+                if (v > peak)
+                    break;
+                rightMin = Math.Min(rightMin, v);
+            }
+
+            var prominence = peak - Math.Max(leftMin, rightMin);
+            if (prominence >= threshold)
+                peaks.Add((i, prominence));
+        }
+
+        return (peaks, e);
     }
 
     /// <summary>The loud part of a band in a block (80th percentile), as 0..100.</summary>
