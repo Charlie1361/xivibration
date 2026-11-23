@@ -120,16 +120,13 @@ public sealed class HitDetection
     /// <summary>When nothing else is found, vibrate on the damage number.</summary>
     public bool FallbackToDamageNumber { get; set; } = true;
 
-    /// <summary>When the sound shows more clear hits than the markers, add the missing ones from its peaks.</summary>
-    public bool FillFromSound { get; set; } = true;
-
     [Newtonsoft.Json.JsonIgnore]
     public HitSource EffectiveSources => this.IgnoreTargetEffect ? this.Sources & ~HitSource.TargetVfx : this.Sources;
 
     public bool Uses(HitSource s) => (this.EffectiveSources & s) != 0;
 
     [Newtonsoft.Json.JsonIgnore]
-    public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}|{this.FallbackToDamageNumber}|{this.FillFromSound}";
+    public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}|{this.FallbackToDamageNumber}";
 }
 
 /// <summary>How a skill's sounds turn into vibration clips.</summary>

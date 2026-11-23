@@ -50,7 +50,7 @@ public sealed record HitAnalysis(List<HitPoint> Hits, List<HitPoint> Rejected, b
 public static partial class HitAnalyzer
 {
     /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
-    public const int AnalyzerVersion = 10;
+    public const int AnalyzerVersion = 8;
 
     /// <summary>Real hit markers. A damage number or an effect beat alone doesn't make a skill "have markers".</summary>
     public const HitSource Markers = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike
