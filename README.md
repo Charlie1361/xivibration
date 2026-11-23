@@ -5,14 +5,18 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 ## How it works
 
 - **After you log in,** the plugin analyses the animation timeline (`.tmb`) of every skill of every job. It starts with your current job. If you use a mod for an animation, Penumbra hands it the modded file, so the timing matches what you see. It saves one vibration pattern per skill. Skills that already have a pattern are left alone.
-- **Every hit gets a pulse.** A timeline marks the damage number only once, so the visible hits are found from what happens in the animation:
+- **Vibration follows the skill's sounds first.** Every sound the skill plays (swings, impacts, charge-ups, extra strikes) is decoded, mod sounds included.
+  - A vibration starts where a sound hits, ends where it fades, and is as strong as the sound is loud.
+  - Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
+  - Separate attacks become separate clips. Inside a long sound the level follows its loudness in a few steps, and the last part fades out with it.
+- **Hits without a sound of their own** come from the animation:
   - the target's hit reaction (Flinch)
   - effects and sounds that land on the target
-  - follow-up strike sounds (often the only marker of a skill's last hit)
+  - follow-up strike sounds
   - vibration the animation already has
   - the parts it plays from other timelines
 
-  Buffs and heals follow their effect beats, for example a shield raised and then slammed. A damage number alone only counts when the animation shows no impact.
+  A strike inside a long sound gets an accent. Buffs and heals without sounds follow their effect beats.
 - **MultiHit tables** (optional): if the MultiHit plugin has a hit table for a skill, each hit in it gets its own pulse too, harder for hits that do more damage. That includes the final hit when the table doesn't add up to 100%. Tables are matched by animation, so every version of a skill gets them.
 - **Timed to the real animation:** a pattern starts when the animation actually starts on your character, not when the server message arrives, and it plays faster or slower along with the animation. Hits closer than 90 ms join into one continuous pulse so they can be felt.
 - **Patterns stay current:** generated patterns are rebuilt automatically when a skill's animation changes (another mod or option) or the analysis improves. Patterns you edited are never touched.
@@ -26,9 +30,9 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 - The Skills tab shows your current job's skills, grouped into weaponskills, spells, abilities, role actions and limit breaks. You can also pick another job to look at.
 - Switch single skills off, test them, or edit any pattern. A pattern is a list of pulses, each with a delay, a length, strong and weak motor levels and a shape. An edited pattern becomes yours and is never changed by re-analysis.
 - **Re-analyse** a single skill, or all of them (Settings, or `/xivib analyse`), after changing mods. Your own patterns are kept.
-- **Timeline editor that works like clips on DAW tracks.** The Strong and Weak motors are two tracks. Every hit of the animation is a numbered waypoint.
+- **Timeline editor that works like clips on DAW tracks.** The Strong and Weak motors are two tracks, with the skill's sound drawn behind the clips like an audio waveform (bass in Strong, treble in Weak). Every hit of the animation is a numbered waypoint.
   - Drag a clip to move it. Drag its left edge to trim the start and its right edge to change the length. Drag the line on top of a clip to set that motor's level (Shift for both motors).
-  - Clips snap to hits, to other clips and to animation frames. Alt places freely, Ctrl moves in 1 ms steps.
+  - Clips snap to hits, to where sounds start and end, to other clips and to animation frames. Alt places freely, Ctrl moves in 1 ms steps.
   - Click a waypoint to add a clip on that hit, or to move the selected clips there. Double-click empty space to add a clip.
   - Ctrl-click or drag a box to select several clips. Delete, Ctrl+D (duplicate), Ctrl+C / Ctrl+V, Ctrl+A, and Ctrl+Z / Ctrl+Y (undo / redo) all work. Right-click a clip for its shape.
   - Ctrl + mouse wheel zooms and the wheel scrolls. The pulse table below shows the exact numbers.

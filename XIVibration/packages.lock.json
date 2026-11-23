@@ -13,6 +13,12 @@
         "requested": "[1.2.39, )",
         "resolved": "1.2.39",
         "contentHash": "fcFN01tDTIQqDuTwr1jUQK/geofiwjG5DycJQOnC72i1SsLAk1ELe+apBOuZ11UMQG8YKFZG1FgvjZPbqHyatg=="
+      },
+      "NVorbis": {
+        "type": "Direct",
+        "requested": "[0.10.5, )",
+        "resolved": "0.10.5",
+        "contentHash": "o+IptCG4Avze39HrGeztC+xIp6fOOwGVAwkoa1J++4Ji1WmZ+KIKlFl5wsgxsXqBkmdpfs/vFSUproiLKYa2bw=="
       }
     }
   }

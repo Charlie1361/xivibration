@@ -493,8 +493,9 @@ public sealed class MainWindow : Window, IDisposable
             }
             else
             {
-                ImGui.TextWrapped("Automatic: one pulse on every hit. Strength follows the skill type and how much of the damage each hit does. " +
-                                  "Adjust the type strengths in Settings.");
+                ImGui.TextWrapped("Automatic: follows the skill's sounds. Clips start where a sound hits, end where it fades, and are as strong as it is loud " +
+                                  "(bass = strong motor, crisp sounds = weak motor). Hits without a sound get a pulse from the animation. " +
+                                  "The colored shading behind the clips is the sound.");
             }
         }
 
@@ -506,6 +507,8 @@ public sealed class MainWindow : Window, IDisposable
             Strength = builtIn ? 1f : plan.Scale,
             Hits = plan.Auto.Hits,
             AutoPulses = plan.Auto.Pulses,
+            Sound = plan.Auto.Sound,
+            SoundMarks = plan.Auto.SoundMarks ?? new List<int>(),
             MakeEditable = () => this.CreateCustomRule(plan, preview, builtIn).Pulses,
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
@@ -599,7 +602,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             else if (generated)
             {
-                ImGui.TextWrapped("Made automatically from this skill's animation, one pulse per hit. " +
+                ImGui.TextWrapped("Made automatically from this skill's sounds and animation hits (the shading behind the clips is the sound). " +
                                   "Edit anything below and it becomes your own pattern, which re-analysis never changes.");
             }
             else
@@ -639,6 +642,8 @@ public sealed class MainWindow : Window, IDisposable
             Strength = plan.Scale,
             Hits = plan.Auto.Hits,
             AutoPulses = plan.Auto.Pulses,
+            Sound = plan.Auto.Sound,
+            SoundMarks = plan.Auto.SoundMarks ?? new List<int>(),
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
         });
@@ -1079,6 +1084,13 @@ public sealed class MainWindow : Window, IDisposable
             var gap = st.GapMs == 0 ? "same moment" : st.GapMs > 0 ? $"animation {st.GapMs} ms before the server message" : $"animation {-st.GapMs} ms after the server message";
             ImGui.TextUnformatted($"Started from: {st.Source} ({gap})   animation speed: {st.Speed:0.00}x");
         }
+        if (tl.Sound is { Sounds.Count: > 0 } snd)
+        {
+            ImGui.TextUnformatted("Sounds:");
+            foreach (var r in snd.Sounds)
+                ImGui.TextUnformatted($"   frame {r.StartFrame,3}  {r.GamePath}{(r.FromMod ? "  (mod)" : string.Empty)}{(r.Decoded ? string.Empty : "  - not found / not readable")}");
+        }
+
         if (tl.Error != null)
             ImGui.TextUnformatted("Note: " + tl.Error);
     }
@@ -1126,10 +1138,10 @@ public sealed class MainWindow : Window, IDisposable
             "have a pattern are not touched.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Hits are found from what happens in the animation: the target's hit reaction, effects and sounds that land on the " +
-            "target, the damage number, and the parts the animation plays from other timelines. Buffs and heals follow their " +
-            "effect beats. If the MultiHit plugin has a hit table for a skill, each hit in it gets its own pulse too, " +
-            "harder for the hits that do more damage.");
+            "Sounds come first: every sound the skill plays is read and followed. A vibration starts where a sound hits, ends where it " +
+            "fades, and is as strong as the sound is loud. Bass drives the strong motor, crisp sounds the weak one. Hits without a sound " +
+            "of their own (the target's hit reaction, effects on the target, MultiHit tables) get a pulse from the animation. " +
+            "Buffs and heals without sounds follow their effect beats.");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +

@@ -34,6 +34,9 @@ public sealed class ActionTimelineInfo
     /// <summary>Which files (and sizes) the timeline was read from, sub-timelines included. Stable across sessions.</summary>
     public string Signature { get; init; } = string.Empty;
 
+    /// <summary>The skill's sounds mixed into motor levels, or null when it has none.</summary>
+    public Audio.SkillSound? Sound { get; init; }
+
     public bool HasBuiltInVibration => this.C120.Count > 0;
 
     public int FlyTextFrame => this.FlyTextFrames.Count > 0 ? this.FlyTextFrames[0] : 10;
@@ -52,6 +55,7 @@ public sealed class AnimationTimelines
 {
     private readonly Dictionary<uint, ActionTimelineInfo> byTimeline = new();
     private readonly Dictionary<uint, uint> actionToTimeline = new();
+    private readonly Dictionary<string, Audio.SoundEnvelope?> soundCache = new();
 
     /// <summary>null = not tried yet.</summary>
     public bool? PenumbraConnected { get; private set; }
@@ -123,6 +127,7 @@ public sealed class AnimationTimelines
                 signature.Append($"|{sub.Resolved}:{sub.Data?.Length ?? -1}");
                 return sub.Data;
             });
+            var sound = Audio.SkillSoundBuilder.Build(entries, this.Read, this.soundCache, signature);
             var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).Distinct().OrderBy(f => f).ToList();
             var end = entries.Where(e => e.Tag is "C010" && e.Fields.Length > 0).Select(e => e.TimeFrames + e.Fields[0]).DefaultIfEmpty(0).Max();
             end = Math.Max(end, entries.Select(e => e.TimeFrames).DefaultIfEmpty(0).Max());
@@ -139,6 +144,7 @@ public sealed class AnimationTimelines
                 C120 = TmbImport.FromEntries(entries),
                 LengthFrames = end,
                 Signature = signature.ToString(),
+                Sound = sound,
             };
         }
         catch (Exception ex)

@@ -10,7 +10,10 @@ public sealed record AutoResult(
     float Scale,
     List<HitPoint> Hits,
     bool HasBuiltIn,
-    List<VibrationPulse> BuiltInPreview)
+    List<VibrationPulse> BuiltInPreview,
+    Audio.SkillSound? Sound = null,
+    List<int>? SoundMarks = null,
+    bool FromSound = false)
 {
     public List<float> HitMs => this.Hits.Select(h => h.Frame * TmbParser.MsPerFrame).ToList();
 
@@ -19,9 +22,10 @@ public sealed record AutoResult(
         get
         {
             var all = this.Hits.Aggregate(HitSource.None, (a, h) => a | h.Sources);
-            if (all == HitSource.None)
+            if (all == HitSource.None && !this.FromSound)
                 return "no animation data, default timing";
             var parts = new List<string>();
+            if (this.FromSound) parts.Add("the skill's sounds");
             if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
             if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
             if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
@@ -55,8 +59,74 @@ public static class AutoPattern
         var (profile, scale) = Pick(info, cfg.AutoStrength);
         var hostile = info?.CanTargetHostile ?? true;
         var hits = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames);
-        var pulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
-        return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120));
+        var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
+
+        // Sounds first: clips start where a sound hits, end where it fades, as strong as it is loud.
+        // Hits the sounds don't cover are added from the animation's other cues.
+        if (tl.Sound is { Low.Length: > 0 } sound)
+        {
+            var seg = Audio.SoundSegmenter.Segment(sound);
+            if (seg.Clips.Count > 0)
+            {
+                var pulses = MergeWithHits(seg.Clips, hits, hitPulses);
+                return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true);
+            }
+        }
+
+        return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound);
+    }
+
+    /// <summary>A hit this close (ms) to a sound clip counts as covered by it.</summary>
+    private const int CoverMs = 67;
+
+    private static List<VibrationPulse> MergeWithHits(List<VibrationPulse> clips, List<HitPoint> hits, List<VibrationPulse> hitPulses)
+    {
+        var result = Configuration.ClonePulses(clips);
+        var impacts = ~(HitSource.FlyText | HitSource.CasterVfx | HitSource.None);
+        for (var i = 0; i < hits.Count && i < hitPulses.Count; i++)
+        {
+            var hit = hits[i];
+            var at = StartMs(hit);
+            result.Sort((a, b) => a.DelayMs.CompareTo(b.DelayMs));
+
+            // A sound starts on this hit: it's already there.
+            if (result.Any(c => Math.Abs(c.DelayMs - at) <= CoverMs))
+                continue;
+
+            var inside = result.FirstOrDefault(c => c.DelayMs < at && at < c.DelayMs + c.DurationMs);
+            if (inside != null)
+            {
+                // A long sound carries a strike with no onset of its own (a whoosh over several
+                // hits): split the clip on the hit and make the part from the hit on stronger.
+                var end = inside.DelayMs + inside.DurationMs;
+                if ((hit.Sources & impacts) != 0 && at - inside.DelayMs >= 50 && end - at >= 30)
+                {
+                    var accent = inside.Clone();
+                    accent.DelayMs = at;
+                    accent.DurationMs = end - at;
+                    accent.Strong = Math.Min(100, (int)MathF.Round(Math.Max(inside.Strong, 10) * 1.15f));
+                    accent.Weak = Math.Min(100, (int)MathF.Round(Math.Max(inside.Weak, 10) * 1.15f));
+                    inside.DurationMs = at - inside.DelayMs;
+                    result.Add(accent);
+                }
+
+                continue;
+            }
+
+            // Right around a clip's end: covered by that sound.
+            if (result.Any(c => Math.Abs(c.DelayMs + c.DurationMs - at) <= CoverMs && c.DelayMs + c.DurationMs <= at))
+                continue;
+
+            // No sound here: a pulse from the animation's cues, kept clear of the next sound.
+            var p = hitPulses[i].Clone();
+            var next = result.Where(c => c.DelayMs > at).Select(c => c.DelayMs).DefaultIfEmpty(int.MaxValue).Min();
+            p.DurationMs = Math.Min(p.DurationMs, next - at);
+            if (p.DurationMs >= 30)
+                result.Add(p);
+        }
+
+        Audio.SoundSegmenter.Tidy(result);
+        return result;
     }
 
     private static List<VibrationPulse> ToPulses(List<HitPoint> hits, Profile profile, bool hostile, bool aoe)

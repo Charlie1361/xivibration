@@ -1,8 +1,8 @@
 {
   "Author": "Charlie1361",
   "Name": "XIVibration",
-  "Punchline": "Controller vibration on every skill, timed to its hits.",
-  "Description": "Every skill of every job makes your gamepad vibrate on each of its hits. After you log in, the plugin analyses the animation of every skill (the one actually loaded, through Penumbra if you use mods) and saves a pattern for each: one pulse per hit, found from the target's hit reactions, the effects and sounds that land on the target, and the parts the animation plays from other timelines. Buffs follow their effect beats. Hit tables from the MultiHit plugin are used when present. The vibration goes through the game's own controller function, so it works with every controller the game supports. Animations that already vibrate on their own are left alone unless you choose to replace them. Skills are grouped by job, and every pattern can be tested and edited; your edits are never overwritten.",
+  "Punchline": "Controller vibration on every skill, following its sounds and hits.",
+  "Description": "Every skill of every job makes your gamepad vibrate, following its sounds. After you log in, the plugin reads every skill's animation and sounds (the ones actually loaded, through Penumbra if you use mods). A vibration starts where a sound hits, ends where it fades, and is as strong as the sound is loud: bass drives the strong motor, crisp sounds the weak one. Hits without a sound of their own come from the animation (hit reactions, effects on the target, MultiHit tables). The vibration goes through the game's own controller function, so it works with every controller the game supports. Animations that already vibrate on their own are left alone unless you choose to replace them. Skills are grouped by job, and every pattern can be edited on a DAW-style timeline that shows the sound; your edits are never overwritten.",
   "Tags": [
     "vibration",
     "rumble",

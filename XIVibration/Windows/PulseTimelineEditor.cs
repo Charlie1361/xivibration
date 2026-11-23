@@ -43,7 +43,15 @@ public sealed class PulseTimelineEditor
         public Action? Edited { get; init; }
 
         public float? PlayheadMs { get; init; }
+
+        /// <summary>The skill's sounds as motor levels (10 ms steps), drawn behind the clips.</summary>
+        public Audio.SkillSound? Sound { get; init; }
+
+        /// <summary>Where sounds start and end (ms); clips snap to them.</summary>
+        public IReadOnlyList<int> SoundMarks { get; init; } = Array.Empty<int>();
     }
+
+    private IReadOnlyList<int> soundMarks = Array.Empty<int>();
 
     private enum DragMode
     {
@@ -113,6 +121,7 @@ public sealed class PulseTimelineEditor
             this.drag = DragMode.None;
         }
 
+        this.soundMarks = input.SoundMarks;
         var list = input.Pulses;
         var shown = (IReadOnlyList<VibrationPulse>?)list ?? input.Display;
         var offset = input.OffsetMs;
@@ -129,7 +138,7 @@ public sealed class PulseTimelineEditor
         ImGui.SameLine();
         ImGui.Checkbox("Snap", ref this.snap);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Clip edges snap to hits, to other clips and to animation frames (33 ms).\nHold Alt while dragging to place freely, Ctrl for 1 ms steps.");
+            ImGui.SetTooltip("Clip edges snap to hits, to where sounds start and end, to other clips and to animation frames (33 ms).\nHold Alt while dragging to place freely, Ctrl for 1 ms steps.");
         ImGui.SameLine();
         using (ImRaii.PushColor(ImGuiCol.Text, new Vector4(0.62f, 0.62f, 0.62f, 1f)))
         {
@@ -206,6 +215,27 @@ public sealed class PulseTimelineEditor
             dl.AddLine(new Vector2(x, strongTop), new Vector2(x, lanesBottom), isMajor ? majorCol : minorCol);
             if (isMajor)
                 dl.AddText(new Vector2(x + 2, lanesBottom + 1), labelCol, major >= 1000 || ms % 1000 == 0 ? $"{ms / 1000f:0.0#}s" : $"{ms:0}ms");
+        }
+
+        // ---- the skill's sound, like an audio waveform behind the clips
+        if (input.Sound is { Low.Length: > 0 } snd)
+        {
+            var lowCol = ImGui.GetColorU32(StrongColor with { W = 0.22f });
+            var highCol = ImGui.GetColorU32(WeakColor with { W = 0.22f });
+            var stepMs = Audio.SoundEnvelope.StepMs;
+            var first = Math.Max(0, (int)(this.scrollMs / stepMs));
+            var last = Math.Min(snd.Low.Length, (int)((this.scrollMs + viewSpan) / stepMs) + 1);
+            for (var i = first; i < last; i++)
+            {
+                var x0 = X(i * stepMs);
+                var x1 = Math.Max(x0 + 1, X((i + 1) * stepMs));
+                var hl = snd.Low[i] * (laneH - 2);
+                var hh = snd.High[i] * (laneH - 2);
+                if (hl > 0.5f)
+                    dl.AddRectFilled(new Vector2(x0, strongTop + laneH - 1 - hl), new Vector2(x1, strongTop + laneH - 1), lowCol);
+                if (hh > 0.5f)
+                    dl.AddRectFilled(new Vector2(x0, lanesBottom - 1 - hh), new Vector2(x1, lanesBottom - 1), highCol);
+            }
         }
 
         // ---- waypoints (behind the clips)
@@ -636,6 +666,8 @@ public sealed class PulseTimelineEditor
         var bestDist = SnapPx / pxPerMs;
         foreach (var h in hitMs)
             Consider(h);
+        foreach (var m in this.soundMarks)
+            Consider(m);
         foreach (var p in list)
         {
             if (this.selected.Contains(p))
