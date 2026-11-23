@@ -142,7 +142,8 @@ public sealed class Plugin : IDalamudPlugin
             this.Timelines.Generation,
             this.MultiHit.Version,
             this.Config.UseMultiHit,
-            HashCode.Combine(s.Weaponskill, s.Spell, s.Ability, s.Support, s.LimitBreak));
+            HashCode.Combine(s.Weaponskill, s.Spell, s.Ability, s.Support, s.LimitBreak),
+            this.Config.Sound.Key);
         if (this.autoCache.TryGetValue((actionId, tl.TimelineId), out var c) && c.Key == key)
             return c.Result;
 

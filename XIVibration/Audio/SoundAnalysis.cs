@@ -119,35 +119,43 @@ public sealed class SkillSound
     }
 }
 
-/// <summary>Cuts a skill's sound into vibration clips: each starts where a sound hits, ends where it fades.</summary>
+/// <summary>
+/// Cuts a skill's sound into vibration clips: one per attack. A clip starts where a sound hits,
+/// rises with it to its peak and stops shortly after: when the sound drops by
+/// <see cref="SoundTuning.CutDrop"/> or after <see cref="SoundTuning.TailMs"/>, whichever comes first.
+/// The sustained part of a sound (reverb, a held tone) doesn't vibrate: only the excess over a slow
+/// background follower can start a clip.
+/// </summary>
 public static class SoundSegmenter
 {
     /// <summary>Below this level nothing vibrates.</summary>
     public const float Floor = 0.08f;
 
-    /// <summary>A rise this big within <see cref="RiseWindowMs"/> is an attack and starts a new clip.</summary>
-    public const float Rise = 0.2f;
-
+    /// <summary>An attack is a jump of <see cref="SoundTuning.AttackThreshold"/> within this window.</summary>
     public const int RiseWindowMs = 60;
 
-    /// <summary>A clip ends when the sound falls below this share of the clip's peak.</summary>
-    public const float EndShare = 0.35f;
+    public const int MinAttackSpacingMs = 90;
 
-    public const int ReleaseMs = 40;
+    /// <summary>How long after an attack the level may keep rising to its peak.</summary>
+    public const int MaxRiseMs = 120;
+
+    /// <summary>A rise longer than this is a swell: it gets its own fade-in clip.</summary>
+    public const int SwellMs = 40;
+
+    /// <summary>The background follows the sound slowly up and quickly down.</summary>
+    public const int BackgroundRiseMs = 250;
+    public const int BackgroundFallMs = 150;
 
     public const int MinClipMs = 60;
     public const int MergeBelowMs = 40;
     public const int MinGapMs = 25;
 
+    /// <summary>Quiet before each attack, so back-to-back attacks are felt one by one.</summary>
+    public const int GapBeforeAttackMs = 30;
+
     public sealed record Result(List<VibrationPulse> Clips, List<int> Marks);
 
-    /// <summary>Inside a sound, a new segment starts when the level moves this far from the segment's average.</summary>
-    public const float StepTolerance = 0.22f;
-
-    public const int MinSegmentMs = 120;
-    public const int MaxSegmentMs = 500;
-
-    public static Result Segment(SkillSound sound)
+    public static Result Segment(SkillSound sound, SoundTuning tuning)
     {
         const int step = SoundEnvelope.StepMs;
         var n = sound.Low.Length;
@@ -155,142 +163,84 @@ public static class SoundSegmenter
         for (var i = 0; i < n; i++)
             e[i] = Math.Max(sound.Low[i], sound.High[i]);
 
-        // Attacks: a clear rise over the recent minimum, both absolute and relative.
-        var window = Math.Max(1, RiseWindowMs / step);
-        var attack = new bool[n];
-        var lastAttack = -100;
+        // Excess over the background: what stands out from the sustained sound.
+        var up = 1f - MathF.Exp(-step / (float)BackgroundRiseMs);
+        var down = 1f - MathF.Exp(-step / (float)BackgroundFallMs);
+        var x = new float[n];
+        var bg = 0f;
         for (var t = 0; t < n; t++)
         {
-            var min = t == 0 ? 0f : 1f;
-            for (var k = Math.Max(0, t - window); k < t; k++)
-                min = Math.Min(min, e[k]);
-            var rising = e[t] >= Floor && e[t] - min >= Rise && e[t] >= min * 1.4f + 0.04f;
-            if (rising && t - lastAttack >= 6)
-            {
-                attack[t] = true;
-                lastAttack = t;
-            }
+            x[t] = Math.Max(0f, e[t] - bg);
+            bg += (e[t] - bg) * (e[t] > bg ? up : down);
         }
 
-        // Sounding regions: from an attack until the sound fades (release follower) or the next attack.
-        var release = 1f - MathF.Exp(-step / (float)ReleaseMs);
-        var pulses = new List<VibrationPulse>();
+        // Attacks: the excess jumps by the threshold within the rise window.
+        var window = Math.Max(1, RiseWindowMs / step);
+        var attacks = new List<int>();
         for (var t = 0; t < n; t++)
         {
-            if (!attack[t])
-                continue;
+            var min = t == 0 ? 0f : float.MaxValue;
+            for (var k = Math.Max(0, t - window); k < t; k++)
+                min = Math.Min(min, x[k]);
+            if (e[t] >= Floor && x[t] - min >= tuning.AttackThreshold
+                && (attacks.Count == 0 || (t - attacks[^1]) * step >= MinAttackSpacingMs))
+                attacks.Add(t);
+        }
 
-            var start = t;
-            var peak = 0f;
-            var follow = 0f;
-            var end = n;
-            for (var k = start; k < n; k++)
+        var pulses = new List<VibrationPulse>();
+        for (var i = 0; i < attacks.Count; i++)
+        {
+            var t0 = attacks[i];
+            var next = i + 1 < attacks.Count ? attacks[i + 1] : n;
+            var stop = i + 1 < attacks.Count ? Math.Max(t0 + MinClipMs / step, next - GapBeforeAttackMs / step) : n;
+
+            // Peak: follow the rise for a little while.
+            var tp = t0;
+            for (var k = t0; k < Math.Min(next, t0 + MaxRiseMs / step + 1); k++)
             {
-                if (k > start && attack[k])
-                {
-                    end = k;
+                if (e[k] >= e[tp])
+                    tp = k;
+                else if (e[k] < 0.9f * e[tp])
                     break;
-                }
+            }
 
-                follow = e[k] > follow ? e[k] : follow + (e[k] - follow) * release;
-                peak = Math.Max(peak, e[k]);
-                if (k > start && follow < Math.Max(Floor, EndShare * peak))
+            // Cut-off: the sound dropped enough, the tail is over, or the next attack comes.
+            var peak = e[tp];
+            var end = Math.Min(stop, tp + Math.Max(1, tuning.TailMs / step) + 1);
+            for (var k = tp + 1; k < end; k++)
+            {
+                if (e[k] < peak * (1f - tuning.CutDrop))
                 {
                     end = k;
                     break;
                 }
             }
 
-            AddRegion(sound, e, start, Math.Max(start + 1, end), pulses);
+            end = Math.Max(end, t0 + 1);
+            var strong = 0f;
+            var weak = 0f;
+            for (var k = t0; k < end; k++)
+            {
+                strong = Math.Max(strong, sound.Low[k]);
+                weak = Math.Max(weak, sound.High[k]);
+            }
+
+            var s = (int)MathF.Round(strong * 100);
+            var w = (int)MathF.Round(weak * 100);
+            if ((tp - t0) * step > SwellMs && tp < end)
+            {
+                pulses.Add(new VibrationPulse { DelayMs = t0 * step, DurationMs = (tp - t0) * step, Strong = s, Weak = w, Shape = PulseShape.FadeIn });
+                pulses.Add(new VibrationPulse { DelayMs = tp * step, DurationMs = Math.Max(step, (end - tp) * step), Strong = s, Weak = w, Shape = PulseShape.FadeOut });
+            }
+            else
+            {
+                pulses.Add(new VibrationPulse { DelayMs = t0 * step, DurationMs = (end - t0) * step, Strong = s, Weak = w, Shape = PulseShape.FadeOut });
+            }
         }
 
         Tidy(pulses);
         var marks = pulses.SelectMany(p => new[] { p.DelayMs, p.DelayMs + p.DurationMs }).Distinct().ToList();
         return new Result(pulses, marks);
-    }
-
-    /// <summary>
-    /// One sounding region as a few segments that follow its loudness: a new segment when the
-    /// level moves away from the current one, the last one fading out with the sound.
-    /// </summary>
-    private static void AddRegion(SkillSound sound, float[] e, int start, int end, List<VibrationPulse> pulses)
-    {
-        const int step = SoundEnvelope.StepMs;
-        var maxLen = MaxSegmentMs / step;
-        var minLen = MinSegmentMs / step;
-        var segStart = start;
-        var sum = 0f;
-        var count = 0;
-        var first = pulses.Count;
-
-        for (var t = start; t <= end; t++)
-        {
-            var done = t == end;
-            if (!done && count >= minLen)
-            {
-                // Only a sustained change (the next 30 ms) starts a new segment, not a single spike.
-                var mean = sum / count;
-                var ahead = 0f;
-                var aheadCount = 0;
-                for (var k = t; k < Math.Min(end, t + 3); k++)
-                {
-                    ahead += e[k];
-                    aheadCount++;
-                }
-
-                ahead /= Math.Max(1, aheadCount);
-                done = (end - t >= minLen && Math.Abs(ahead - mean) > StepTolerance) || t - segStart >= maxLen;
-            }
-
-            if (done && count > 0)
-            {
-                pulses.Add(Segment(sound, e, segStart, t));
-                segStart = t;
-                sum = 0;
-                count = 0;
-            }
-
-            if (t < end)
-            {
-                sum += e[t];
-                count++;
-            }
-        }
-
-        // The first segment keeps the attack's shape; the last one fades with the sound.
-        if (pulses.Count > first)
-        {
-            // A fade-out only fits the region's last segment; otherwise it would dip mid-sound.
-            var firstShape = ShapeOf(e, start, Math.Min(end, start + (pulses[first].DurationMs / step)));
-            pulses[first].Shape = pulses.Count - first == 1 || firstShape == PulseShape.FadeIn ? firstShape : PulseShape.Constant;
-            var last = pulses[^1];
-            var ls = last.DelayMs / step;
-            if (ls + 1 < end && e[end - 1] < 0.6f * e[ls])
-                last.Shape = PulseShape.FadeOut;
-        }
-    }
-
-    private static VibrationPulse Segment(SkillSound sound, float[] e, int s, int en)
-    {
-        // Levels: the loud part of the segment (average of its upper half), per motor.
-        static float Loud(float[] v, int a, int b)
-        {
-            var vals = new List<float>(b - a);
-            for (var i = a; i < b; i++)
-                vals.Add(v[i]);
-            vals.Sort();
-            var half = vals.Skip(vals.Count / 2).ToList();
-            return half.Count == 0 ? 0 : half.Average();
-        }
-
-        return new VibrationPulse
-        {
-            DelayMs = s * SoundEnvelope.StepMs,
-            DurationMs = (en - s) * SoundEnvelope.StepMs,
-            Strong = (int)MathF.Round(Loud(sound.Low, s, en) * 100),
-            Weak = (int)MathF.Round(Loud(sound.High, s, en) * 100),
-            Shape = PulseShape.Constant,
-        };
     }
 
     /// <summary>Make clips motor-friendly: no tiny clips, no tiny gaps.</summary>
@@ -327,44 +277,6 @@ public static class SoundSegmenter
         }
 
         pulses.RemoveAll(p => p.DurationMs <= 0 || (p.Strong <= 0 && p.Weak <= 0));
-    }
-
-    private static PulseShape ShapeOf(float[] e, int s, int en)
-    {
-        var len = en - s;
-        if (len < 4)
-            return PulseShape.Constant;
-
-        var peakAt = s;
-        for (var t = s; t < en; t++)
-        {
-            if (e[t] > e[peakAt])
-                peakAt = t;
-        }
-
-        var peak = Math.Max(1e-3f, e[peakAt]);
-        var q = Math.Max(1, len / 4);
-        var head = Avg(e, s, s + q) / peak;
-        var tail = Avg(e, en - q, en) / peak;
-        var pos = (peakAt - s) / (float)len;
-
-        if (pos <= 0.3f && tail < 0.6f) return PulseShape.FadeOut;
-        if (pos >= 0.7f && head < 0.6f) return PulseShape.FadeIn;
-        if (head < 0.7f && tail < 0.7f) return PulseShape.Bump;
-        return PulseShape.Constant;
-    }
-
-    private static float Avg(float[] e, int a, int b)
-    {
-        var sum = 0f;
-        var c = 0;
-        for (var i = Math.Max(0, a); i < Math.Min(e.Length, b); i++)
-        {
-            sum += e[i];
-            c++;
-        }
-
-        return c == 0 ? 0 : sum / c;
     }
 }
 

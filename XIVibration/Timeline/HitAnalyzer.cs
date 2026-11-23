@@ -36,7 +36,7 @@ public sealed record HitPoint(int Frame, float Weight, HitSource Sources);
 public static partial class HitAnalyzer
 {
     /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
-    public const int AnalyzerVersion = 3;
+    public const int AnalyzerVersion = 4;
 
     /// <summary>Events closer than this (frames) are the same hit.</summary>
     public const int MergeFrames = 3;

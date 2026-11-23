@@ -130,7 +130,7 @@ public sealed class SkillAnalysis
     {
         var mh = this.plugin.MultiHitFor(actionId);
         var mhText = mh == null ? "-" : string.Join(",", mh.Hits.Select(h => $"{h.Frame}:{h.Percent}")) + $"/{mh.FinalDelayFrames}";
-        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}");
+        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}|{this.plugin.Config.Sound.Key}");
     }
 
     private bool IsOutdated(uint actionId, ActionRule rule)

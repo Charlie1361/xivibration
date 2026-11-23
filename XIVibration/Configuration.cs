@@ -89,6 +89,27 @@ public sealed class AutoStrengths
     public float LimitBreak { get; set; } = 1f;
 }
 
+/// <summary>How a skill's sounds turn into vibration clips.</summary>
+[Serializable]
+public sealed class SoundTuning
+{
+    public const float DefaultAttackThreshold = 0.15f;
+    public const int DefaultTailMs = 150;
+    public const float DefaultCutDrop = 0.30f;
+
+    /// <summary>How big a jump in a sound (0..1) makes a pulse.</summary>
+    public float AttackThreshold { get; set; } = DefaultAttackThreshold;
+
+    /// <summary>Longest a pulse goes on after the sound's peak.</summary>
+    public int TailMs { get; set; } = DefaultTailMs;
+
+    /// <summary>A pulse stops when the sound has dropped this much below its peak (0..1).</summary>
+    public float CutDrop { get; set; } = DefaultCutDrop;
+
+    [Newtonsoft.Json.JsonIgnore]
+    public string Key => $"{this.AttackThreshold:0.###}|{this.TailMs}|{this.CutDrop:0.###}";
+}
+
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
@@ -116,6 +137,8 @@ public sealed class Configuration : IPluginConfiguration
     public HashSet<uint> AutoDisabled { get; set; } = new();
 
     public AutoStrengths AutoStrength { get; set; } = new();
+
+    public SoundTuning Sound { get; set; } = new();
 
     /// <summary>Use per-hit timings from the MultiHit plugin's config when present.</summary>
     public bool UseMultiHit { get; set; } = true;

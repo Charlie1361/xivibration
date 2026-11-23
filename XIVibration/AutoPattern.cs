@@ -65,7 +65,7 @@ public static class AutoPattern
         // Hits the sounds don't cover are added from the animation's other cues.
         if (tl.Sound is { Low.Length: > 0 } sound)
         {
-            var seg = Audio.SoundSegmenter.Segment(sound);
+            var seg = Audio.SoundSegmenter.Segment(sound, cfg.Sound);
             if (seg.Clips.Count > 0)
             {
                 var pulses = MergeWithHits(seg.Clips, hits, hitPulses);
@@ -96,26 +96,24 @@ public static class AutoPattern
             var inside = result.FirstOrDefault(c => c.DelayMs < at && at < c.DelayMs + c.DurationMs);
             if (inside != null)
             {
-                // A long sound carries a strike with no onset of its own (a whoosh over several
-                // hits): split the clip on the hit and make the part from the hit on stronger.
+                // A sound carries a strike with no attack of its own (a whoosh over several hits):
+                // split the clip on the hit and make the part from the hit on a full, stronger pulse.
                 var end = inside.DelayMs + inside.DurationMs;
-                if ((hit.Sources & impacts) != 0 && at - inside.DelayMs >= 50 && end - at >= 30)
+                if ((hit.Sources & impacts) != 0 && at - inside.DelayMs >= 50)
                 {
+                    var nextStart = result.Where(c => c.DelayMs > at).Select(c => c.DelayMs).DefaultIfEmpty(int.MaxValue).Min();
                     var accent = inside.Clone();
                     accent.DelayMs = at;
-                    accent.DurationMs = end - at;
+                    accent.DurationMs = Math.Min(Math.Max(end - at, MinPulseMs), nextStart - at);
                     accent.Strong = Math.Min(100, (int)MathF.Round(Math.Max(inside.Strong, 10) * 1.15f));
                     accent.Weak = Math.Min(100, (int)MathF.Round(Math.Max(inside.Weak, 10) * 1.15f));
+                    accent.Shape = PulseShape.FadeOut;
                     inside.DurationMs = at - inside.DelayMs;
                     result.Add(accent);
                 }
 
                 continue;
             }
-
-            // Right around a clip's end: covered by that sound.
-            if (result.Any(c => Math.Abs(c.DelayMs + c.DurationMs - at) <= CoverMs && c.DelayMs + c.DurationMs <= at))
-                continue;
 
             // No sound here: a pulse from the animation's cues, kept clear of the next sound.
             var p = hitPulses[i].Clone();
