@@ -5,17 +5,14 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 ## How it works
 
 - **After you log in,** the plugin analyses the animation timeline (`.tmb`) of every skill of every job. It starts with your current job. If you use a mod for an animation, Penumbra hands it the modded file, so the timing matches what you see. It saves one vibration pattern per skill. Skills that already have a pattern are left alone.
-- **Vibration follows the skill's sounds first.** Every sound the skill plays (swings, impacts, charge-ups, extra strikes) is decoded, mod sounds included.
-  - A skill's sound usually has a loud background (reverb, held tones) with louder bumps on top: the hits. Each bump that stands out from the dips around it becomes a **solid block** at the sound's level, covering the top of the bump, followed by a **short fade-out**. The background doesn't vibrate.
-  - Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
-  - Tune it under Settings → Sound:
-    - **Threshold:** how far a bump must stand out.
-    - **Fade-out:** the length of the fade after each block.
-    - **Join bumps closer than:** turns nearby bumps into one block.
-    - **Also pulse on hits without a sound bump:** off by default.
-
-    Patterns rebuild when you let go of a slider.
-- **Skills without sounds, or with sounds that can't be read,** get their pulses from the animation:
+- **Hits decide when, the sound decides how strong.** Every hit of the skill's animation gets a pulse. Its strength comes from how loud the skill's sound is at that hit, read through Penumbra so mod sounds count. Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
+- **The last hit is always the strongest:** at least 90% on both motors, fading out.
+- **Optional, build from sound bumps instead** (Settings → Sound): each clear bump in the sound becomes a solid block at the sound's level with a short fade-out, and the sound's background doesn't vibrate. Its settings:
+  - **Threshold:** how far a bump must stand out.
+  - **Fade-out:** the length of the fade after each block.
+  - **Join bumps closer than:** turns nearby bumps into one block.
+  - **Also pulse on hits without a sound bump.**
+- **Hits come from the animation:**
   - the target's hit reaction (Flinch)
   - effects and sounds that land on the target
   - follow-up strike sounds

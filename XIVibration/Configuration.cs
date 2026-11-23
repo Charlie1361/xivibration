@@ -97,6 +97,9 @@ public sealed class SoundTuning
     public const int DefaultFadeTailMs = 60;
     public const int DefaultJoinGapMs = 60;
 
+    /// <summary>Build patterns from the sound's bumps instead of the animation's hits.</summary>
+    public bool Enabled { get; set; }
+
     /// <summary>How far (0..1) a sound must rise above its own background to vibrate.</summary>
     public float Threshold { get; set; } = DefaultThreshold;
 
@@ -110,7 +113,7 @@ public sealed class SoundTuning
     public bool PulseSilentHits { get; set; }
 
     [Newtonsoft.Json.JsonIgnore]
-    public string Key => $"{this.Threshold:0.###}|{this.FadeTailMs}|{this.JoinGapMs}|{this.PulseSilentHits}";
+    public string Key => $"{this.Enabled}|{this.Threshold:0.###}|{this.FadeTailMs}|{this.JoinGapMs}|{this.PulseSilentHits}";
 }
 
 [Serializable]

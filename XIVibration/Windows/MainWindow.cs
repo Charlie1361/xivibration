@@ -493,7 +493,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             else
             {
-                ImGui.TextWrapped("Automatic: follows the skill's sounds. Each clear bump in the sound is a solid block at the sound's level with a short fade-out " +
+                ImGui.TextWrapped("Automatic: one pulse on each hit of the animation, as strong as the skill's sound is loud at that hit; the last hit is the strongest " +
                                   "(bass = strong motor, crisp sounds = weak motor). Without readable sounds, pulses come from the animation's hits. " +
                                   "The colored shading behind the clips is the sound.");
             }
@@ -1012,59 +1012,80 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextUnformatted("Sound");
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextWrapped("A skill's sound has a loud background (reverb, held tones) with louder bumps on top: the hits. Each bump becomes a solid block at the sound's level with a short fade-out; the background doesn't vibrate. Patterns rebuild when you let go of a slider.");
+            ImGui.TextWrapped("Pulses sit on the animation's hits, as strong as the skill's sound is loud at each hit (bass: strong motor, the rest: weak motor). The last hit is always the strongest. Optionally, patterns can be built from the sound's bumps instead.");
         var snd = this.Config.Sound;
         var rebuild = false;
 
-        ImGui.SetNextItemWidth(200 * scale);
-        var thr = snd.Threshold * 100f;
-        if (ImGui.SliderFloat("Threshold##snd", ref thr, 3f, 40f, "%.0f"))
+        var fromSound = snd.Enabled;
+        if (ImGui.Checkbox("Build patterns from sound bumps instead of hits##snd", ref fromSound))
         {
-            snd.Threshold = thr / 100f;
-            this.MarkDirty();
-        }
-
-        rebuild |= ImGui.IsItemDeactivatedAfterEdit();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("How far a sound must rise above its own background to vibrate.\nHigher: only the clearest hits. Lower: smaller bumps too.");
-
-        ImGui.SetNextItemWidth(200 * scale);
-        var tail = snd.FadeTailMs;
-        if (ImGui.SliderInt("Fade-out##snd", ref tail, 0, 300, "%d ms"))
-        {
-            snd.FadeTailMs = tail;
-            this.MarkDirty();
-        }
-
-        rebuild |= ImGui.IsItemDeactivatedAfterEdit();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Length of the fade-out after each block.");
-
-        ImGui.SetNextItemWidth(200 * scale);
-        var join = snd.JoinGapMs;
-        if (ImGui.SliderInt("Join bumps closer than##snd", ref join, 0, 300, "%d ms"))
-        {
-            snd.JoinGapMs = join;
-            this.MarkDirty();
-        }
-
-        rebuild |= ImGui.IsItemDeactivatedAfterEdit();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Bumps closer together than this become one block.\nHigher: fewer, longer blocks. Lower: more separate blocks.");
-
-        var silent = snd.PulseSilentHits;
-        if (ImGui.Checkbox("Also pulse on hits without a sound bump##snd", ref silent))
-        {
-            snd.PulseSilentHits = silent;
+            snd.Enabled = fromSound;
             this.MarkDirty();
             rebuild = true;
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Hits found in the animation (target flinches, MultiHit tables) where the sound has no bump get a pulse of their own.");
+        {
+            ImGui.SetTooltip("Off: one pulse per hit of the animation, strength from the sound.\n" +
+                             "On: each clear bump in the skill's sound becomes a solid block with a short fade-out;\n" +
+                             "the sound's background doesn't vibrate. The settings below only apply when this is on.");
+        }
+
+        using (ImRaii.Disabled(!snd.Enabled))
+        {
+
+            ImGui.SetNextItemWidth(200 * scale);
+            var thr = snd.Threshold * 100f;
+            if (ImGui.SliderFloat("Threshold##snd", ref thr, 3f, 40f, "%.0f"))
+            {
+                snd.Threshold = thr / 100f;
+                this.MarkDirty();
+            }
+
+            rebuild |= ImGui.IsItemDeactivatedAfterEdit();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("How far a sound must rise above its own background to vibrate.\nHigher: only the clearest hits. Lower: smaller bumps too.");
+
+            ImGui.SetNextItemWidth(200 * scale);
+            var tail = snd.FadeTailMs;
+            if (ImGui.SliderInt("Fade-out##snd", ref tail, 0, 300, "%d ms"))
+            {
+                snd.FadeTailMs = tail;
+                this.MarkDirty();
+            }
+
+            rebuild |= ImGui.IsItemDeactivatedAfterEdit();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Length of the fade-out after each block.");
+
+            ImGui.SetNextItemWidth(200 * scale);
+            var join = snd.JoinGapMs;
+            if (ImGui.SliderInt("Join bumps closer than##snd", ref join, 0, 300, "%d ms"))
+            {
+                snd.JoinGapMs = join;
+                this.MarkDirty();
+            }
+
+            rebuild |= ImGui.IsItemDeactivatedAfterEdit();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Bumps closer together than this become one block.\nHigher: fewer, longer blocks. Lower: more separate blocks.");
+
+            var silent = snd.PulseSilentHits;
+            if (ImGui.Checkbox("Also pulse on hits without a sound bump##snd", ref silent))
+            {
+                snd.PulseSilentHits = silent;
+                this.MarkDirty();
+                rebuild = true;
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Hits found in the animation (target flinches, MultiHit tables) where the sound has no bump get a pulse of their own.");
+
+        }
 
         if (ImGui.Button("Reset sound settings"))
         {
+            snd.Enabled = false;
             snd.Threshold = SoundTuning.DefaultThreshold;
             snd.FadeTailMs = SoundTuning.DefaultFadeTailMs;
             snd.JoinGapMs = SoundTuning.DefaultJoinGapMs;
@@ -1218,10 +1239,10 @@ public sealed class MainWindow : Window, IDisposable
             "have a pattern are not touched.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Sounds come first: every sound the skill plays is read. Each clear bump in the sound becomes a solid block at the sound's " +
-            "level with a short fade-out; the sound's background (reverb, held tones) doesn't vibrate (tune it under Settings > Sound). Bass drives the strong motor, crisp sounds the weak one. " +
-            "Skills without readable sounds get pulses from the animation's hits (the target's hit reaction, effects on the target, MultiHit tables); " +
-            "buffs and heals without sounds follow their effect beats. The numbered waypoints show the animation's hits either way.");
+            "Hits decide when, the sound decides how strong. Every hit of the animation (the target's hit reaction, effects and sounds on " +
+            "the target, MultiHit tables, follow-up strikes) gets a pulse, as strong as the skill's sound is loud at that moment: bass drives the " +
+            "strong motor, crisp sounds the weak one. The last hit is always the strongest. Buffs and heals follow their effect beats. " +
+            "Optionally (Settings > Sound), patterns can be built from the sound's bumps instead.");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +

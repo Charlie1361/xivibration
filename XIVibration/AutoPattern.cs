@@ -60,21 +60,93 @@ public static class AutoPattern
         var hostile = info?.CanTargetHostile ?? true;
         var hits = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames);
         var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
+        var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
 
-        // Sounds first: clips start where a sound hits, end where it fades, as strong as it is loud.
-        // Hits the sounds don't cover are added from the animation's other cues.
-        if (tl.Sound is { Low.Length: > 0 } sound)
+        // Hits decide when; the sound decides how strong.
+        if (sound != null)
+            ApplySoundLevels(hitPulses, hits, sound);
+
+        // Optional: build from the sound's bumps instead of the hits.
+        if (cfg.Sound.Enabled && sound != null)
         {
             var seg = Audio.SoundSegmenter.Segment(sound, cfg.Sound);
             if (seg.Clips.Count > 0)
             {
-                // Sound decides. Animation hits without a sound bump only vibrate when asked for.
                 var pulses = cfg.Sound.PulseSilentHits ? MergeWithHits(seg.Clips, hits, hitPulses) : seg.Clips;
+                MakeLastHitLoud(pulses, hits);
                 return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true);
             }
         }
 
+        MakeLastHitLoud(hitPulses, hits);
         return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound);
+    }
+
+    /// <summary>Loudness is read from a little before the hit to a little after (the sound's attack can lag).</summary>
+    private const int LevelBeforeMs = 30;
+    private const int LevelAfterMs = 100;
+
+    /// <summary>A hit is always felt: its stronger motor gets at least this (%).</summary>
+    private const int MinHitLevel = 25;
+
+    /// <summary>The last hit: at least this on both motors.</summary>
+    private const int FinisherLevel = 90;
+
+    /// <summary>Each hit pulse as strong as the sound is loud at that hit (bass: strong motor, the rest: weak motor).</summary>
+    private static void ApplySoundLevels(List<VibrationPulse> pulses, List<HitPoint> hits, Audio.SkillSound sound)
+    {
+        const int step = Audio.SoundEnvelope.StepMs;
+        for (var i = 0; i < pulses.Count && i < hits.Count; i++)
+        {
+            var at = StartMs(hits[i]);
+            var a = Math.Max(0, (at - LevelBeforeMs) / step);
+            var b = Math.Min(sound.Low.Length, (at + LevelAfterMs) / step + 1);
+            if (a >= b)
+                continue; // no sound at this hit: keep the animation-based level
+
+            float low = 0, high = 0;
+            for (var k = a; k < b; k++)
+            {
+                low = Math.Max(low, sound.Low[k]);
+                high = Math.Max(high, sound.High[k]);
+            }
+
+            var strong = (int)MathF.Round(low * 100);
+            var weak = (int)MathF.Round(high * 100);
+            var top = Math.Max(strong, weak);
+            if (top <= 0)
+                continue;
+            if (top < MinHitLevel)
+            {
+                strong = (int)MathF.Round(strong * MinHitLevel / (float)top);
+                weak = (int)MathF.Round(weak * MinHitLevel / (float)top);
+            }
+
+            pulses[i].Strong = Math.Clamp(strong, 0, 100);
+            pulses[i].Weak = Math.Clamp(weak, 0, 100);
+        }
+    }
+
+    /// <summary>The last hit is the skill's strongest pulse: at least <see cref="FinisherLevel"/> on both motors.</summary>
+    private static void MakeLastHitLoud(List<VibrationPulse> pulses, List<HitPoint> hits)
+    {
+        if (pulses.Count == 0)
+            return;
+
+        // The pulse on the last hit (or the last pulse, if no hit has one).
+        var target = pulses[^1];
+        if (hits.Count > 0)
+        {
+            var lastHit = StartMs(hits[^1]);
+            var near = pulses.OrderBy(p => Math.Abs(p.DelayMs - lastHit)).First();
+            if (Math.Abs(near.DelayMs - lastHit) <= 150)
+                target = near;
+        }
+
+        var maxStrong = pulses.Max(p => p.Strong);
+        var maxWeak = pulses.Max(p => p.Weak);
+        target.Strong = Math.Max(target.Strong, Math.Max(maxStrong, FinisherLevel));
+        target.Weak = Math.Max(target.Weak, Math.Max(maxWeak, FinisherLevel));
     }
 
     /// <summary>A hit this close (ms) to a sound clip counts as covered by it.</summary>

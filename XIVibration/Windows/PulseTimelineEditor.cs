@@ -200,6 +200,10 @@ public sealed class PulseTimelineEditor
             pxPerMs = width / viewSpan;
         }
 
+        // ---- opaque background, so nothing behind the editor shows through
+        var bgCol = ImGui.GetStyle().Colors[(int)ImGuiCol.WindowBg] with { W = 1f };
+        dl.AddRectFilled(origin, origin + new Vector2(width, totalH), ImGui.GetColorU32(bgCol));
+
         // ---- background and grid
         dl.AddRectFilled(new Vector2(origin.X, strongTop), new Vector2(origin.X + width, strongTop + laneH), ImGui.GetColorU32(ImGuiCol.FrameBg), 4f);
         dl.AddRectFilled(new Vector2(origin.X, weakTop), new Vector2(origin.X + width, lanesBottom), ImGui.GetColorU32(ImGuiCol.FrameBg), 4f);
