@@ -53,6 +53,14 @@ public sealed class PulseTimelineEditor
         /// <summary>The hit rules in words, for the tooltip of a left-out moment.</summary>
         public string RuleText { get; init; } = string.Empty;
 
+        /// <summary>Every sound file of the skill, drawn as its own lane below the motors.</summary>
+        public IReadOnlyList<Audio.SoundTrack> Tracks { get; init; } = Array.Empty<Audio.SoundTrack>();
+
+        /// <summary>Sounds muted in Test (by <see cref="Audio.SkillSoundRef.Key"/>).</summary>
+        public ISet<string>? Muted { get; init; }
+
+        public Action<string>? ToggleMute { get; init; }
+
         /// <summary>Where sounds start and end (ms); clips snap to them.</summary>
         public IReadOnlyList<int> SoundMarks { get; init; } = Array.Empty<int>();
     }
@@ -67,10 +75,20 @@ public sealed class PulseTimelineEditor
         Resize,
         LevelStrong,
         LevelWeak,
+        FadeIn,
+        FadeOut,
+        CurveIn,
+        CurveOut,
         Box,
     }
 
-    private readonly record struct Orig(int Start, int Duration, int Strong, int Weak);
+    private readonly record struct Orig(int Start, int Duration, int Strong, int Weak, int FadeIn, int FadeOut, int CurveIn, int CurveOut);
+
+    private static readonly Vector4[] TrackColors =
+    {
+        new(0.55f, 0.85f, 0.55f, 1f), new(0.85f, 0.7f, 0.45f, 1f), new(0.6f, 0.7f, 1f, 1f),
+        new(0.95f, 0.6f, 0.75f, 1f), new(0.6f, 0.9f, 0.9f, 1f), new(0.85f, 0.85f, 0.5f, 1f),
+    };
 
     private static readonly Vector4 StrongColor = new(0.95f, 0.55f, 0.25f, 1f);
     private static readonly Vector4 WeakColor = new(0.35f, 0.7f, 1f, 1f);
@@ -149,7 +167,7 @@ public sealed class PulseTimelineEditor
         using (ImRaii.PushColor(ImGuiCol.Text, new Vector4(0.62f, 0.62f, 0.62f, 1f)))
         {
             ImGui.TextUnformatted(editable
-                ? $"Zoom {this.zoom:0.#}x   ·   drag clips to move, edges to trim/resize, top line for level   ·   Ctrl+wheel zoom   ·   Ctrl+Z undo"
+                ? $"Zoom {this.zoom:0.#}x  ·  drag clips to move, edges to trim/resize, top line for level, corner squares for fades, dots to bend them  ·  Ctrl+wheel zoom  ·  Ctrl+Z undo"
                 : "Read only");
         }
 
@@ -159,9 +177,13 @@ public sealed class PulseTimelineEditor
         var laneH = 46 * scale;
         var laneGap = 6 * scale;
         var axisH = ImGui.GetTextLineHeight() + 4 * scale;
-        var totalH = badgeH + laneH * 2 + laneGap + axisH;
+        var trackH = 18 * scale;
+        var tracksH = input.Tracks.Count == 0 ? 0 : 4 * scale + input.Tracks.Count * (trackH + 2 * scale);
+        var totalH = badgeH + laneH * 2 + laneGap + axisH + tracksH;
 
         var lastEnd = shown.Count == 0 ? 0 : shown.Max(p => p.DelayMs + offset + p.DurationMs);
+        if (input.Tracks.Count > 0)
+            lastEnd = Math.Max(lastEnd, input.Tracks.Max(t => t.StartMs + (t.Envelope?.LengthMs ?? 300)));
         var lastHit = input.Hits.Count == 0 ? 0 : input.Hits.Max(h => (float)h.Ms);
         var fitSpan = Math.Max(500f, (float)(Math.Ceiling((Math.Max(lastEnd, lastHit) + 150) / 250.0) * 250));
         var viewSpan = fitSpan / this.zoom;
@@ -321,6 +343,11 @@ public sealed class PulseTimelineEditor
             dl.AddLine(new Vector2(x, strongTop), new Vector2(x, lanesBottom), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.9f)), 2f);
         }
 
+        // ---- audio lanes: every sound file of the skill on its own, DAW style
+        var hoveredTrack = this.DrawTracks(input, dl, origin, width, lanesBottom + axisH + 4 * scale, trackH, scale, X, hovered, mouse);
+        if (hoveredTrack is { } ht && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+            input.ToggleMute?.Invoke(ht.Ref.Key);
+
         if (!editable)
             return;
 
@@ -333,8 +360,8 @@ public sealed class PulseTimelineEditor
         {
             ImGui.SetMouseCursor(hitMode switch
             {
-                DragMode.TrimStart or DragMode.Resize => ImGuiMouseCursor.ResizeEw,
-                DragMode.LevelStrong or DragMode.LevelWeak => ImGuiMouseCursor.ResizeNs,
+                DragMode.TrimStart or DragMode.Resize or DragMode.FadeIn or DragMode.FadeOut => ImGuiMouseCursor.ResizeEw,
+                DragMode.LevelStrong or DragMode.LevelWeak or DragMode.CurveIn or DragMode.CurveOut => ImGuiMouseCursor.ResizeNs,
                 DragMode.Move => ImGuiMouseCursor.Hand,
                 _ => hoveredHit >= 0 ? ImGuiMouseCursor.Hand : ImGuiMouseCursor.Arrow,
             });
@@ -348,6 +375,20 @@ public sealed class PulseTimelineEditor
                 list = this.Editable(input, ref list, ref offset);
                 if (list != null)
                     this.WaypointClick(input, list, offset, (int)MathF.Round(hitMs[hoveredHit]));
+            }
+            else if (hitIndex >= 0 && hitMode is DragMode.CurveIn or DragMode.CurveOut && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            {
+                list = this.Editable(input, ref list, ref offset);
+                if (list != null)
+                {
+                    this.Snapshot(input.Key, list);
+                    var p = list[hitIndex];
+                    if (hitMode == DragMode.CurveIn)
+                        p.FadeInCurve = 0;
+                    else
+                        p.FadeOutCurve = 0;
+                    this.Finish(input, list);
+                }
             }
             else if (hitIndex >= 0)
             {
@@ -443,6 +484,63 @@ public sealed class PulseTimelineEditor
 
     // ---------------------------------------------------------------- drawing helpers
 
+    /// <summary>One thin lane per sound file: its own waveform at its start time. Returns the hovered one.</summary>
+    private Audio.SoundTrack? DrawTracks(Input input, ImDrawListPtr dl, Vector2 origin, float width, float top, float trackH, float scale, Func<float, float> X, bool hovered, Vector2 mouse)
+    {
+        Audio.SoundTrack? hit = null;
+        for (var i = 0; i < input.Tracks.Count; i++)
+        {
+            var t = input.Tracks[i];
+            var y0 = top + i * (trackH + 2 * scale);
+            var y1 = y0 + trackH;
+            var muted = input.Muted?.Contains(t.Ref.Key) == true;
+            var color = TrackColors[i % TrackColors.Length];
+            if (muted || t.Envelope == null)
+                color = new Vector4(0.5f, 0.5f, 0.5f, 1f);
+
+            dl.AddRectFilled(new Vector2(origin.X, y0), new Vector2(origin.X + width, y1), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.03f)), 2f);
+            var len = t.Envelope?.LengthMs ?? 300;
+            var x0 = X(t.StartMs);
+            var x1 = X(t.StartMs + len);
+            dl.AddRectFilled(new Vector2(x0, y0), new Vector2(x1, y1), ImGui.GetColorU32(color with { W = 0.12f }), 2f);
+
+            if (t.Envelope is { } env)
+            {
+                var step = Audio.SoundEnvelope.StepMs;
+                var col = ImGui.GetColorU32(color with { W = muted ? 0.35f : 0.8f });
+                for (var k = 0; k < env.Low.Length; k++)
+                {
+                    var level = Math.Max(Audio.SkillSound.Level(env.Low[k], Audio.SkillSound.BassBoostDb), Audio.SkillSound.Level(env.High[k]));
+                    var h = level * (trackH - 2);
+                    if (h < 0.5f)
+                        continue;
+                    var xa = X(t.StartMs + k * step);
+                    var xb = Math.Max(xa + 1, X(t.StartMs + (k + 1) * step));
+                    var mid = (y0 + y1) / 2f;
+                    dl.AddRectFilled(new Vector2(xa, mid - h / 2), new Vector2(xb, mid + h / 2), col);
+                }
+            }
+
+            dl.AddRect(new Vector2(x0, y0), new Vector2(x1, y1), ImGui.GetColorU32(color with { W = 0.6f }), 2f);
+            var name = System.IO.Path.GetFileName(t.Ref.GamePath) + (t.Envelope == null ? "  (not found)" : muted ? "  (muted)" : string.Empty);
+            dl.PushClipRect(new Vector2(Math.Max(origin.X, x0), y0), new Vector2(origin.X + width, y1), true);
+            dl.AddText(new Vector2(Math.Max(origin.X, x0) + 3, y0 + (trackH - ImGui.GetTextLineHeight()) / 2f), ImGui.GetColorU32(new Vector4(1, 1, 1, muted ? 0.45f : 0.85f)), name);
+            dl.PopClipRect();
+
+            if (hovered && mouse.Y >= y0 && mouse.Y <= y1 && mouse.X >= x0 && mouse.X <= Math.Max(x1, x0 + 60 * scale))
+            {
+                hit = t;
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                ImGui.SetTooltip($"{t.Ref.GamePath}{(t.Ref.FromMod ? "  (mod)" : string.Empty)}\n" +
+                                 (t.Ref.FromMod ? $"{t.Ref.Resolved}\n" : string.Empty) +
+                                 $"Starts at {t.StartMs} ms (frame {t.Ref.StartFrame}), {(t.Envelope == null ? "not readable" : $"{len} ms long")}, sound #{t.Ref.SoundIndex}\n" +
+                                 (muted ? "Muted in Test. Click to unmute." : "Click to mute it in Test."));
+            }
+        }
+
+        return hit;
+    }
+
     private static void DrawClip(ImDrawListPtr dl, VibrationPulse p, float x0, float x1, float top, float laneH, int level, Vector4 color, float strength, bool selected, int index, float scale, bool label)
     {
         var bottom = top + laneH;
@@ -456,7 +554,7 @@ public sealed class PulseTimelineEditor
         for (var x = x0; x < x1; x += step)
         {
             var t = (x - x0) / w * p.DurationMs;
-            var env = VibrationEngine.Envelope(p.Shape, t, p.DurationMs) * strength;
+            var env = VibrationEngine.Envelope(p, t) * strength;
             var h = Math.Clamp(level * env / 100f, 0f, 1f) * (laneH - 2);
             if (h > 0)
                 dl.AddRectFilled(new Vector2(x, bottom - 1 - h), new Vector2(Math.Min(x + step, x1), bottom - 1), fill);
@@ -469,8 +567,39 @@ public sealed class PulseTimelineEditor
         var border = selected ? ImGui.GetColorU32(new Vector4(1, 1, 1, 0.95f)) : ImGui.GetColorU32(color with { W = 0.75f });
         dl.AddRect(new Vector2(x0, top + 1), new Vector2(x1, bottom - 1), border, 3f, ImDrawFlags.None, selected ? 2f : 1f);
 
+        // Fade handles (top corners) and curve dots (middle of each fade), DAW style.
+        if (w > 18 * scale)
+        {
+            var h = FadeGeometry(p, x0, x1, top, laneH, level);
+            var handleCol = ImGui.GetColorU32(new Vector4(1, 1, 1, selected ? 0.95f : 0.6f));
+            var r = 3.5f * scale;
+            dl.AddRectFilled(h.InHandle - new Vector2(r, r), h.InHandle + new Vector2(r, r), handleCol);
+            dl.AddRectFilled(h.OutHandle - new Vector2(r, r), h.OutHandle + new Vector2(r, r), handleCol);
+            if (p.FadeInMs > 0)
+                dl.AddCircleFilled(h.InDot, r, handleCol);
+            if (p.FadeOutMs > 0)
+                dl.AddCircleFilled(h.OutDot, r, handleCol);
+        }
+
         if (label && w > 26 * scale)
             dl.AddText(new Vector2(x0 + 3, top + 2), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.85f)), $"{index + 1}");
+    }
+
+    private readonly record struct FadeHandles(Vector2 InHandle, Vector2 OutHandle, Vector2 InDot, Vector2 OutDot);
+
+    /// <summary>Where a clip's fade handles and curve dots are in one lane.</summary>
+    private static FadeHandles FadeGeometry(VibrationPulse p, float x0, float x1, float top, float laneH, int level)
+    {
+        var w = Math.Max(2f, x1 - x0);
+        var perMs = w / Math.Max(1, p.DurationMs);
+        var bottom = top + laneH - 1;
+        var height = Math.Clamp(level / 100f, 0f, 1f) * (laneH - 2);
+        var inX = x0 + p.FadeInMs * perMs;
+        var outX = x1 - p.FadeOutMs * perMs;
+        var y = top + 5;
+        var inDot = new Vector2(x0 + p.FadeInMs * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeInCurve));
+        var outDot = new Vector2(x1 - p.FadeOutMs * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeOutCurve));
+        return new FadeHandles(new Vector2(inX, y), new Vector2(outX, y), inDot, outDot);
     }
 
     private static (float Minor, float Major) GridSteps(float pxPerMs)
@@ -525,6 +654,19 @@ public sealed class PulseTimelineEditor
                     continue;
 
                 var wide = x1 - x0 > 14;
+                if (x1 - x0 > 18)
+                {
+                    var fh = FadeGeometry(p, x0, x1, top, laneH, level);
+                    if (p.FadeInMs > 0 && Vector2.Distance(m, fh.InDot) <= 6)
+                        return (i, DragMode.CurveIn);
+                    if (p.FadeOutMs > 0 && Vector2.Distance(m, fh.OutDot) <= 6)
+                        return (i, DragMode.CurveOut);
+                    if (Math.Abs(m.Y - fh.InHandle.Y) <= 6 && Math.Abs(m.X - fh.InHandle.X) <= 6)
+                        return (i, DragMode.FadeIn);
+                    if (Math.Abs(m.Y - fh.OutHandle.Y) <= 6 && Math.Abs(m.X - fh.OutHandle.X) <= 6)
+                        return (i, DragMode.FadeOut);
+                }
+
                 if (Math.Abs(m.X - x1) <= 5)
                     return (i, DragMode.Resize);
                 if (wide && Math.Abs(m.X - x0) <= 5)
@@ -569,7 +711,7 @@ public sealed class PulseTimelineEditor
         this.levelBoth = shift;
         this.originals = new Dictionary<VibrationPulse, Orig>(ReferenceEqualityComparer.Instance);
         foreach (var p in this.selected)
-            this.originals[p] = new Orig(p.DelayMs + offset, p.DurationMs, p.Strong, p.Weak);
+            this.originals[p] = new Orig(p.DelayMs + offset, p.DurationMs, p.Strong, p.Weak, p.FadeInMs, p.FadeOutMs, p.FadeInCurve, p.FadeOutCurve);
     }
 
     private bool levelBoth;
@@ -627,6 +769,41 @@ public sealed class PulseTimelineEditor
                 break;
             }
 
+            case DragMode.FadeIn:
+            case DragMode.FadeOut:
+            {
+                var d = (int)MathF.Round(dx);
+                foreach (var (p, o) in this.originals)
+                {
+                    if (this.drag == DragMode.FadeIn)
+                        p.FadeInMs = Math.Clamp(o.FadeIn + d, 0, p.DurationMs - p.FadeOutMs);
+                    else
+                        p.FadeOutMs = Math.Clamp(o.FadeOut - d, 0, p.DurationMs - p.FadeInMs);
+                }
+
+                tip = this.drag == DragMode.FadeIn ? $"Fade in {this.grabbed.FadeInMs} ms" : $"Fade out {this.grabbed.FadeOutMs} ms";
+                break;
+            }
+
+            case DragMode.CurveIn:
+            case DragMode.CurveOut:
+            {
+                // Up: the fade holds its level longer (curve goes negative); down: it drops fast.
+                var dc = (int)MathF.Round((this.dragStartMouse.Y - mouse.Y) / laneH * 250f);
+                foreach (var (p, o) in this.originals)
+                {
+                    if (this.drag == DragMode.CurveIn)
+                        p.FadeInCurve = Math.Clamp(o.CurveIn - dc, -100, 100);
+                    else
+                        p.FadeOutCurve = Math.Clamp(o.CurveOut - dc, -100, 100);
+                }
+
+                var c = this.drag == DragMode.CurveIn ? this.grabbed.FadeInCurve : this.grabbed.FadeOutCurve;
+                tip = $"Curve {c:+0;-0;0}  ({(c > 15 ? "fast drop, thin tail" : c < -15 ? "holds, then drops" : "linear")})";
+                ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeNs);
+                break;
+            }
+
             case DragMode.LevelStrong:
             case DragMode.LevelWeak:
             {
@@ -650,7 +827,8 @@ public sealed class PulseTimelineEditor
                 return;
         }
 
-        this.dragChanged |= this.originals.Any(kv => kv.Key.DelayMs + offset != kv.Value.Start || kv.Key.DurationMs != kv.Value.Duration || kv.Key.Strong != kv.Value.Strong || kv.Key.Weak != kv.Value.Weak);
+        this.dragChanged |= this.originals.Any(kv => kv.Key.DelayMs + offset != kv.Value.Start || kv.Key.DurationMs != kv.Value.Duration || kv.Key.Strong != kv.Value.Strong || kv.Key.Weak != kv.Value.Weak
+                                                     || kv.Key.FadeInMs != kv.Value.FadeIn || kv.Key.FadeOutMs != kv.Value.FadeOut || kv.Key.FadeInCurve != kv.Value.CurveIn || kv.Key.FadeOutCurve != kv.Value.CurveOut);
         ImGui.SetTooltip(tip);
     }
 
@@ -753,22 +931,55 @@ public sealed class PulseTimelineEditor
         if (!popup || list == null)
             return;
 
-        foreach (var s in Enum.GetValues<PulseShape>())
+        foreach (var s in new[] { PulseShape.Constant, PulseShape.Bump, PulseShape.Throb })
         {
             if (ImGui.Selectable($"Shape: {MainWindow.ShapeName(s)}", this.menuPulse?.Shape == s))
+                this.ForSelected(input, list, p => p.Shape = s);
+        }
+
+        ImGui.Separator();
+        foreach (var (label, curve) in new[] { ("Linear", 0), ("Fast drop, thin tail", 50), ("Holds, then drops", -50) })
+        {
+            if (ImGui.Selectable($"Fade-out curve: {label}", this.menuPulse?.FadeOutCurve == curve))
             {
-                this.Snapshot(input.Key, list);
-                foreach (var p in this.selected)
-                    p.Shape = s;
-                this.Finish(input, list);
+                this.ForSelected(input, list, p =>
+                {
+                    p.FadeOutCurve = curve;
+                    if (p.FadeOutMs == 0)
+                        p.FadeOutMs = Math.Min(p.DurationMs / 2, p.DurationMs - p.FadeInMs);
+                });
             }
         }
+
+        foreach (var (label, curve) in new[] { ("Linear", 0), ("Late rise", 50), ("Quick rise", -50) })
+        {
+            if (ImGui.Selectable($"Fade-in curve: {label}", this.menuPulse?.FadeInCurve == curve))
+            {
+                this.ForSelected(input, list, p =>
+                {
+                    p.FadeInCurve = curve;
+                    if (p.FadeInMs == 0)
+                        p.FadeInMs = Math.Min(p.DurationMs / 3, p.DurationMs - p.FadeOutMs);
+                });
+            }
+        }
+
+        if (ImGui.Selectable("Remove fades"))
+            this.ForSelected(input, list, p => p.FadeInMs = p.FadeOutMs = 0);
 
         ImGui.Separator();
         if (ImGui.Selectable("Duplicate  (Ctrl+D)"))
             this.Duplicate(input, list, offset);
         if (ImGui.Selectable("Delete  (Del)"))
             this.Delete(input, list);
+    }
+
+    private void ForSelected(Input input, List<VibrationPulse> list, Action<VibrationPulse> change)
+    {
+        this.Snapshot(input.Key, list);
+        foreach (var p in this.selected)
+            change(p);
+        this.Finish(input, list);
     }
 
     private void HandleKeys(Input input, List<VibrationPulse>? list, int offset, float? mouseMs)

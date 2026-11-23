@@ -69,13 +69,13 @@ public sealed class SkillAnalysis
         this.loggedInAt = DateTime.UtcNow - StartDelay;
     }
 
-    /// <summary>Re-create the pattern for one skill from its current animation.</summary>
+    /// <summary>Throw away the user's pattern for a skill and rebuild it from its current animation.</summary>
     public ActionRule Regenerate(uint actionId)
     {
         var cfg = this.plugin.Config;
-        cfg.Rules.TryGetValue(actionId, out var old);
+        this.plugin.RemoveUserRule(actionId);
         cfg.Rules.Remove(actionId);
-        var rule = this.Create(actionId, old?.Enabled ?? !cfg.AutoDisabled.Contains(actionId), old?.Origin == RuleOrigin.Generated ? old.Strength : 1f);
+        var rule = this.Create(actionId, true, 1f);
         cfg.Save();
         return rule;
     }
@@ -119,7 +119,7 @@ public sealed class SkillAnalysis
             {
                 if (!cfg.Rules.TryGetValue(id, out var rule))
                 {
-                    this.Create(id, !cfg.AutoDisabled.Contains(id), 1f);
+                    this.Create(id, true, 1f);
                     this.created++;
                 }
                 else if (rule.Origin == RuleOrigin.Generated && this.IsOutdated(id, rule))
@@ -150,7 +150,7 @@ public sealed class SkillAnalysis
         {
             if (this.created + this.refreshed > 0)
                 cfg.Save();
-            this.Status = $"Done: {cfg.GeneratedCount} skills analysed ({this.created} new, {this.refreshed} updated), {cfg.UserCount} of your own patterns kept";
+            this.Status = $"Done: {cfg.GeneratedCount} skills analysed ({this.created} new, {this.refreshed} updated), {this.plugin.ActivePreset?.Rules.Count ?? cfg.UserCount} of your own patterns kept";
             Plugin.Log.Info($"Skill analysis: {this.created} new, {this.refreshed} updated.");
         }
     }

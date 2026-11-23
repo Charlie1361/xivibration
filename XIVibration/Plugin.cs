@@ -116,6 +116,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        if (!ClientState.IsLoggedIn)
+            this.ActivePreset = null;
+        else if (++this.presetCheck % 30 == 0 || this.ActivePreset == null)
+            this.UpdateActivePreset();
+
         this.Analysis.Update();
 
         // The animation never showed up: time the pattern from the server message.
@@ -131,6 +136,8 @@ public sealed class Plugin : IDalamudPlugin
     // Mods can be switched while zoning; re-read animations on the next use.
     private void OnTerritoryChanged(uint territory) => this.Timelines.Clear();
 
+    private int presetCheck;
+
     public HitAnalyzer.MultiHitTable? MultiHitFor(uint actionId)
         => this.Config.Hits.Uses(HitSource.MultiHit) && this.MultiHit.TryGet(actionId, out var t) ? t : null;
 
@@ -139,12 +146,10 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>The automatic pattern for a skill, from its current animation.</summary>
     public AutoResult BuildAuto(uint actionId, ActionTimelineInfo tl)
     {
-        var s = this.Config.AutoStrength;
         var key = HashCode.Combine(
             this.Timelines.Generation,
             this.MultiHit.Version,
             this.Config.Hits.Key,
-            HashCode.Combine(s.Weaponskill, s.Spell, s.Ability, s.Support, s.LimitBreak),
             this.Config.Sound.Key);
         if (this.autoCache.TryGetValue((actionId, tl.TimelineId), out var c) && c.Key == key)
             return c.Result;
@@ -153,6 +158,114 @@ public sealed class Plugin : IDalamudPlugin
         this.autoCache[(actionId, tl.TimelineId)] = (key, result);
         return result;
     }
+
+    // ---------------------------------------------------------------- character presets
+
+    /// <summary>The logged-in character's preset: their own patterns and switched-off skills.</summary>
+    public CharacterPreset? ActivePreset { get; private set; }
+
+    /// <summary>Picks the logged-in character's preset (made empty if new). Cheap when nothing changed.</summary>
+    private void UpdateActivePreset()
+    {
+        var lp = ObjectTable.LocalPlayer;
+        if (lp == null)
+            return;
+
+        var name = lp.Name.TextValue;
+        var world = lp.HomeWorld.IsValid ? lp.HomeWorld.Value.Name.ExtractText() : string.Empty;
+        if (this.ActivePreset is { } cur && cur.Name == name && cur.World == world)
+            return;
+
+        var key = $"{name}@{world}";
+        if (!this.Config.Characters.TryGetValue(key, out var preset))
+        {
+            preset = new CharacterPreset { Name = name, World = world };
+            this.Config.Characters[key] = preset;
+        }
+
+        this.ActivePreset = preset;
+
+        // Edits from before presets existed move into the first character that logs in.
+        if (this.Config.MoveOldEditsToFirstCharacter)
+        {
+            var moved = 0;
+            foreach (var (id, rule) in this.Config.Rules.ToList())
+            {
+                if (rule.Origin == RuleOrigin.User)
+                {
+                    preset.Rules[id] = rule;
+                    this.Config.Rules.Remove(id);
+                    moved++;
+                }
+                else if (!rule.Enabled)
+                {
+                    preset.Disabled.Add(id);
+                    rule.Enabled = true;
+                }
+            }
+
+            foreach (var id in this.Config.AutoDisabled)
+                preset.Disabled.Add(id);
+            this.Config.AutoDisabled.Clear();
+            this.Config.MoveOldEditsToFirstCharacter = false;
+            Chat.Print($"[XIVibration] Your edited skills ({moved}) are now saved in {name}'s preset. Each character keeps its own from now on.");
+        }
+
+        this.Config.Save();
+    }
+
+    /// <summary>The user's own pattern for a skill: from the active preset (or, before login, older edits).</summary>
+    public ActionRule? UserRule(uint actionId)
+    {
+        if (this.ActivePreset != null && this.ActivePreset.Rules.TryGetValue(actionId, out var r))
+            return r;
+        return this.Config.Rules.TryGetValue(actionId, out var g) && g.Origin == RuleOrigin.User ? g : null;
+    }
+
+    public bool IsDisabled(uint actionId)
+        => this.ActivePreset?.Disabled.Contains(actionId) ?? this.Config.AutoDisabled.Contains(actionId);
+
+    public void SetDisabled(uint actionId, bool off)
+    {
+        var set = this.ActivePreset?.Disabled ?? this.Config.AutoDisabled;
+        if (off)
+            set.Add(actionId);
+        else
+            set.Remove(actionId);
+        this.Touch();
+    }
+
+    /// <summary>Makes a pattern the user's own and stores it in the active preset (the same object, so editors keep working).</summary>
+    public void PutUserRule(ActionRule rule)
+    {
+        rule.Origin = RuleOrigin.User;
+        if (this.ActivePreset == null)
+        {
+            this.Config.Rules[rule.ActionId] = rule;
+            return;
+        }
+
+        this.ActivePreset.Rules[rule.ActionId] = rule;
+        if (this.Config.Rules.TryGetValue(rule.ActionId, out var g) && ReferenceEquals(g, rule))
+            this.Config.Rules.Remove(rule.ActionId);
+        this.Touch();
+    }
+
+    public void RemoveUserRule(uint actionId)
+    {
+        this.ActivePreset?.Rules.Remove(actionId);
+        if (this.Config.Rules.TryGetValue(actionId, out var g) && g.Origin == RuleOrigin.User)
+            this.Config.Rules.Remove(actionId);
+        this.Touch();
+    }
+
+    private void Touch()
+    {
+        if (this.ActivePreset != null)
+            this.ActivePreset.Updated = DateTime.Now;
+    }
+
+    // ---------------------------------------------------------------- plans
 
     public SkillPlan PlanFor(uint actionId, uint playedTimeline = 0)
     {
@@ -167,32 +280,32 @@ public sealed class Plugin : IDalamudPlugin
         var auto = this.BuildAuto(actionId, tl);
         var keepBuiltIn = tl.HasBuiltInVibration && !this.Config.ReplaceModVibration;
 
-        if (this.Config.Rules.TryGetValue(actionId, out var rule))
+        var user = this.UserRule(actionId);
+        if (user != null)
         {
-            var firstHit = auto.Hits.Count > 0 ? auto.Hits[0].Ms : 0;
-            var offset = rule.Anchor == PulseAnchor.FirstHit ? firstHit : 0;
-            var pulses = rule.Pulses.Select(p =>
+            // Older patterns counted from the first hit: bake that in, the editor works in animation time.
+            if (user.Anchor == PulseAnchor.FirstHit)
             {
-                var c = p.Clone();
-                c.DelayMs += offset;
-                return c;
-            }).ToList();
+                var firstHit = auto.Hits.Count > 0 ? auto.Hits[0].Ms : 0;
+                foreach (var p in user.Pulses)
+                    p.DelayMs = Math.Max(0, p.DelayMs + firstHit);
+                user.Anchor = PulseAnchor.AnimationStart;
+            }
 
-            if (rule.Origin == RuleOrigin.User)
-                return new SkillPlan(actionId, rule.Enabled ? SkillMode.Custom : SkillMode.Off, tl, auto, rule, pulses, rule.Strength);
+            foreach (var p in user.Pulses)
+                p.UpgradeShape();
 
-            // A pattern made from the animation: follows the auto settings.
-            var mode = !rule.Enabled || !this.Config.AutoEnabled ? SkillMode.Off
-                : keepBuiltIn ? SkillMode.BuiltIn
-                : SkillMode.Auto;
-            return new SkillPlan(actionId, mode, tl, auto, rule, pulses, rule.Strength * auto.Scale);
+            var pulses = Configuration.ClonePulses(user.Pulses);
+            return new SkillPlan(actionId, user.Enabled ? SkillMode.Custom : SkillMode.Off, tl, auto, user, pulses, user.Strength);
         }
 
+        var off = this.IsDisabled(actionId);
+        var mode = off ? SkillMode.Off : keepBuiltIn ? SkillMode.BuiltIn : SkillMode.Auto;
+        if (this.Config.Rules.TryGetValue(actionId, out var rule))
+            return new SkillPlan(actionId, mode, tl, auto, rule, Configuration.ClonePulses(rule.Pulses), rule.Strength * auto.Scale);
+
         // Not analysed yet: build it live.
-        var liveMode = !this.Config.AutoEnabled || this.Config.AutoDisabled.Contains(actionId) ? SkillMode.Off
-            : keepBuiltIn ? SkillMode.BuiltIn
-            : SkillMode.Auto;
-        return new SkillPlan(actionId, liveMode, tl, auto, null, auto.Pulses, auto.Scale);
+        return new SkillPlan(actionId, mode, tl, auto, null, auto.Pulses, auto.Scale);
     }
 
     private void OnLocalActionUsed(uint actionId, uint playedTimeline)

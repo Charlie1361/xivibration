@@ -71,8 +71,6 @@ public sealed unsafe class VibrationEngine : IDisposable
         var now = startMs ?? Clock.NowMs;
         lock (this.sync)
         {
-            if (!ignoreGates && this.config.CancelPreviousOnNewAction)
-                this.active.Clear();
 
             foreach (var p in pulses)
             {
@@ -150,13 +148,36 @@ public sealed unsafe class VibrationEngine : IDisposable
                     continue;
                 }
 
-                var env = Envelope(a.Pulse.Shape, t, a.Pulse.DurationMs) * a.Scale;
+                var env = Envelope(a.Pulse, t) * a.Scale;
                 strong = Math.Max(strong, a.Pulse.Strong * env);
                 weak = Math.Max(weak, a.Pulse.Weak * env);
             }
         }
 
         return (Math.Clamp((int)MathF.Round(strong), 0, 100), Math.Clamp((int)MathF.Round(weak), 0, 100));
+    }
+
+    /// <summary>A clip's level at time t (ms into it): its shape, times its fade-in and fade-out.</summary>
+    public static float Envelope(VibrationPulse p, float t)
+    {
+        var env = Envelope(p.Shape, t, p.DurationMs);
+        if (p.FadeInMs > 0 && t < p.FadeInMs)
+            env *= Fade(t / p.FadeInMs, p.FadeInCurve);
+        var outStart = p.DurationMs - p.FadeOutMs;
+        if (p.FadeOutMs > 0 && t > outStart)
+            env *= Fade(1f - (t - outStart) / p.FadeOutMs, p.FadeOutCurve);
+        return env;
+    }
+
+    /// <summary>
+    /// A fade from 0 (x = 0) to 1 (x = 1). Curve -100..100: 0 is linear; positive bends it so a
+    /// fade-out drops fast and leaves a thin tail; negative holds the level and drops late.
+    /// </summary>
+    public static float Fade(float x, int curve)
+    {
+        x = Math.Clamp(x, 0f, 1f);
+        var k = MathF.Pow(2f, Math.Clamp(curve, -100, 100) / 33f);
+        return MathF.Pow(x, k);
     }
 
     public static float Envelope(PulseShape shape, float t, float duration)

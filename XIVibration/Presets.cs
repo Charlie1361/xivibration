@@ -39,5 +39,10 @@ public static class Presets
         new("Swell", "Soft rise and fall.", new[] { P(0, 700, 60, 40, PulseShape.Bump) }),
     };
 
-    public static List<VibrationPulse> Copy(Preset p) => p.Pulses.Select(x => x.Clone()).ToList();
+    public static List<VibrationPulse> Copy(Preset p) => p.Pulses.Select(x =>
+    {
+        var c = x.Clone();
+        c.UpgradeShape();
+        return c;
+    }).ToList();
 }

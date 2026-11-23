@@ -52,7 +52,14 @@ public sealed class SoundEnvelope
 }
 
 /// <summary>One sound a skill plays.</summary>
-public sealed record SkillSoundRef(string GamePath, string Resolved, bool FromMod, int StartFrame, bool Decoded);
+public sealed record SkillSoundRef(string GamePath, string Resolved, bool FromMod, int StartFrame, bool Decoded, int SoundIndex = 0)
+{
+    /// <summary>Identifies this sound in this skill (for muting it in Test).</summary>
+    public string Key => $"{this.GamePath}@{this.StartFrame}#{this.SoundIndex}";
+}
+
+/// <summary>One sound file of a skill on the timeline: where it starts and its own loudness (null if unreadable).</summary>
+public sealed record SoundTrack(SkillSoundRef Ref, int StartMs, SoundEnvelope? Envelope);
 
 /// <summary>
 /// All sounds of a skill mixed together on the animation's time line, as motor levels 0..1
@@ -77,6 +84,9 @@ public sealed class SkillSound
     public required float[] High { get; init; }
 
     public required IReadOnlyList<SkillSoundRef> Sounds { get; init; }
+
+    /// <summary>Every sound file on its own, for the editor's audio lanes.</summary>
+    public IReadOnlyList<SoundTrack> Tracks { get; init; } = Array.Empty<SoundTrack>();
 
     public int LengthMs => this.Low.Length * SoundEnvelope.StepMs;
 
@@ -164,7 +174,7 @@ public static class SoundSegmenter
             return new Result(new(), new());
 
         // Bumps: the clear peaks; each block covers the top of its bump.
-        var (peaks, e) = FindPeaks(sound, tuning.Threshold);
+        var (peaks, e) = FindPeaks(sound, tuning.Threshold, tuning.PeakWindow);
         var regions = new List<(int Start, int End)>();
         foreach (var (i, prominence) in peaks)
         {
@@ -190,7 +200,7 @@ public static class SoundSegmenter
         }
 
         // Bumps close together are one block.
-        var joinSteps = Math.Max(0, tuning.JoinGapMs / step);
+        var joinSteps = Math.Max(0, SoundTuning.JoinGapMs / step);
         for (var i = regions.Count - 1; i > 0; i--)
         {
             if (regions[i].Start - regions[i - 1].End <= joinSteps)
@@ -256,7 +266,11 @@ public static class SoundSegmenter
     /// <see cref="ProminenceWindowMs"/> each way). Returns the peaks (10 ms step index, prominence)
     /// and the smoothed loudness.
     /// </summary>
-    public static (List<(int Index, float Prominence)> Peaks, float[] Loudness) FindPeaks(SkillSound sound, float threshold)
+    /// <param name="peakWindow">
+    /// When set, only peaks within this share of the loudest peak are kept (0.2: at least 80% as loud),
+    /// judged over the whole sound of the skill.
+    /// </param>
+    public static (List<(int Index, float Prominence)> Peaks, float[] Loudness) FindPeaks(SkillSound sound, float threshold, float? peakWindow = null)
     {
         const int step = SoundEnvelope.StepMs;
         var n = sound.Low.Length;
@@ -354,6 +368,14 @@ public static class SoundSegmenter
                 kept.Add(p);
         }
 
+        // Only peaks about as loud as the loudest one: no quiet echoes or side ripples.
+        if (peakWindow is { } wnd && kept.Count > 0)
+        {
+            var loudest = kept.Max(p => raw[p.Index]);
+            var floor = loudest * (1f - Math.Clamp(wnd, 0f, 1f));
+            kept = kept.Where(p => raw[p.Index] >= floor).ToList();
+        }
+
         return (kept, e);
     }
 
@@ -420,6 +442,7 @@ public static class SkillSoundBuilder
     {
         var placed = new List<(int StartMs, SoundEnvelope Envelope)>();
         var refs = new List<SkillSoundRef>();
+        var tracks = new List<SoundTrack>();
         foreach (var e in entries)
         {
             if (e.Tag != "C063" || !e.Path.EndsWith(".scd", StringComparison.OrdinalIgnoreCase))
@@ -448,12 +471,19 @@ public static class SkillSoundBuilder
                 }
             }
 
-            refs.Add(new SkillSoundRef(e.Path, resolved, fromMod, e.TimeFrames, env != null));
+            var sref = new SkillSoundRef(e.Path, resolved, fromMod, e.TimeFrames, env != null, index);
+            var startMs = (int)MathF.Round(e.TimeFrames * Timeline.TmbParser.MsPerFrame);
+            refs.Add(sref);
+            tracks.Add(new SoundTrack(sref, startMs, env));
             if (env != null)
-                placed.Add(((int)MathF.Round(e.TimeFrames * Timeline.TmbParser.MsPerFrame), env));
+                placed.Add((startMs, env));
         }
 
-        return placed.Count == 0 ? (refs.Count == 0 ? null : new SkillSound { Low = Array.Empty<float>(), High = Array.Empty<float>(), Sounds = refs })
-            : SkillSound.Mix(placed, refs);
+        tracks = tracks.OrderBy(t => t.StartMs).ToList();
+        if (placed.Count == 0)
+            return refs.Count == 0 ? null : new SkillSound { Low = Array.Empty<float>(), High = Array.Empty<float>(), Sounds = refs, Tracks = tracks };
+
+        var mix = SkillSound.Mix(placed, refs)!;
+        return new SkillSound { Low = mix.Low, High = mix.High, Sounds = refs, Tracks = tracks };
     }
 }

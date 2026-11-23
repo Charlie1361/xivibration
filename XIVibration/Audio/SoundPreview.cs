@@ -19,14 +19,18 @@ public sealed class SoundPreview
 
     /// <param name="read">Reads a game path the way the game would (mods included).</param>
     /// <returns>16-bit mono PCM WAV, or null when the skill has no readable sound.</returns>
-    public byte[]? Mix(IReadOnlyList<TmbParser.Entry> entries, Func<string, (byte[]? Data, string Resolved, bool FromMod)> read, float volume)
+    /// <param name="muted">Sounds left out, by <see cref="SkillSoundRef.Key"/>.</param>
+    public byte[]? Mix(IReadOnlyList<TmbParser.Entry> entries, Func<string, (byte[]? Data, string Resolved, bool FromMod)> read, float volume, ISet<string>? muted = null)
     {
         var placed = new List<(int StartSample, DecodedSound Sound)>();
         foreach (var e in entries)
         {
             if (e.Tag != "C063" || !e.Path.EndsWith(".scd", StringComparison.OrdinalIgnoreCase))
                 continue;
-            var sound = this.Decode(e.Path, e.Fields.Length > 3 ? Math.Max(0, e.Fields[3]) : 0, read);
+            var index = e.Fields.Length > 3 ? Math.Max(0, e.Fields[3]) : 0;
+            if (muted != null && muted.Contains($"{e.Path}@{e.TimeFrames}#{index}"))
+                continue;
+            var sound = this.Decode(e.Path, index, read);
             if (sound != null)
                 placed.Add(((int)(e.TimeFrames * TmbParser.MsPerFrame * OutputRate / 1000f), sound));
         }

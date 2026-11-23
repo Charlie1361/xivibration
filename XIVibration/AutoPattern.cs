@@ -89,7 +89,8 @@ public static class AutoPattern
 
     public static AutoResult Build(ActionInfo? info, ActionTimelineInfo tl, HitAnalyzer.MultiHitTable? multiHit, Configuration cfg)
     {
-        var (profile, scale) = Pick(info, cfg.AutoStrength);
+        var profile = Pick(info);
+        const float scale = 1f;
         var hostile = info?.CanTargetHostile ?? true;
         var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
         var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits);
@@ -104,7 +105,7 @@ public static class AutoPattern
             hits = analysis.Hits;
             origin = HitOrigin.Markers;
         }
-        else if (sound != null && (soundPeaks = SoundPeakHits(sound, cfg.Sound.Threshold)).Count > 0)
+        else if (sound != null && (soundPeaks = SoundPeakHits(sound, cfg.Sound.Threshold, cfg.Sound.PeakWindow)).Count > 0)
         {
             hits = soundPeaks;
             origin = HitOrigin.SoundPeaks;
@@ -114,15 +115,10 @@ public static class AutoPattern
             hits = analysis.Hits;
             origin = HitOrigin.WeakCues;
         }
-        else if (cfg.Hits.FallbackToDamageNumber)
+        else
         {
             hits = new() { new HitPoint(analysis.FlyTextFrame >= 0 ? analysis.FlyTextFrame : 10, 1f, HitSource.FlyText) };
             origin = HitOrigin.DamageNumber;
-        }
-        else
-        {
-            hits = new();
-            origin = HitOrigin.None;
         }
 
         var hitPulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
@@ -137,20 +133,22 @@ public static class AutoPattern
             var seg = Audio.SoundSegmenter.Segment(sound, cfg.Sound);
             if (seg.Clips.Count > 0)
             {
-                var pulses = cfg.Sound.PulseSilentHits ? MergeWithHits(seg.Clips, hits, hitPulses) : seg.Clips;
+                var pulses = seg.Clips;
+                Finish(pulses);
                 MakeLastHitLoud(pulses, hits);
                 return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), sound, seg.Marks, true, analysis.Rejected, origin);
             }
         }
 
         MakeLastHitLoud(hitPulses, hits);
+        Finish(hitPulses);
         return new AutoResult(hitPulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120), tl.Sound, null, false, analysis.Rejected, origin);
     }
 
     /// <summary>The clear peaks in a skill's sound, as hits.</summary>
-    private static List<HitPoint> SoundPeakHits(Audio.SkillSound sound, float threshold)
+    private static List<HitPoint> SoundPeakHits(Audio.SkillSound sound, float threshold, float peakWindow)
     {
-        var (peaks, _) = Audio.SoundSegmenter.FindPeaks(sound, threshold);
+        var (peaks, _) = Audio.SoundSegmenter.FindPeaks(sound, threshold, peakWindow);
         return peaks.Select(p =>
         {
             var ms = p.Index * Audio.SoundEnvelope.StepMs;
@@ -340,22 +338,44 @@ public static class AutoPattern
 
     private static int StartMs(HitPoint hit) => hit.Ms;
 
-    private static (Profile Profile, float Scale) Pick(ActionInfo? info, AutoStrengths s)
+    /// <summary>Generated fade-outs: hold this share of the clip, then fade the rest on this curve.</summary>
+    private const float FadeHoldShare = 0.3f;
+    public const int GeneratedFadeCurve = 35;
+
+    /// <summary>Whole-clip fade shapes become a short hold plus a curved fade-out (or a fade-in).</summary>
+    private static void Finish(List<VibrationPulse> pulses)
+    {
+        foreach (var p in pulses)
+        {
+            if (p.Shape == PulseShape.FadeOut)
+            {
+                p.Shape = PulseShape.Constant;
+                p.FadeOutMs = Math.Max(20, (int)(p.DurationMs * (1f - FadeHoldShare)));
+                p.FadeOutCurve = GeneratedFadeCurve;
+            }
+            else
+            {
+                p.UpgradeShape();
+            }
+        }
+    }
+
+    private static Profile Pick(ActionInfo? info)
     {
         if (info == null)
-            return (Weaponskill, s.Weaponskill);
+            return Weaponskill;
         if (info.Group == SkillGroup.LimitBreak)
-            return (LimitBreak, s.LimitBreak);
+            return LimitBreak;
         if (!info.CanTargetHostile)
-            return (Support, s.Support);
+            return Support;
 
         return info.Category switch
         {
-            3 => (Weaponskill, s.Weaponskill),
-            2 => (Spell, s.Spell),
-            4 when info.Recast100ms >= 600 => (BigAbility, s.Ability),
-            4 => (Ability, s.Ability),
-            _ => (Weaponskill, s.Weaponskill),
+            3 => Weaponskill,
+            2 => Spell,
+            4 when info.Recast100ms >= 600 => BigAbility,
+            4 => Ability,
+            _ => Weaponskill,
         };
     }
 

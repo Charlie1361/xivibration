@@ -40,7 +40,35 @@ public sealed class VibrationPulse
 
     public PulseShape Shape { get; set; } = PulseShape.Constant;
 
+    /// <summary>Fade at the start of the clip (ms, 0 = none).</summary>
+    public int FadeInMs { get; set; }
+
+    /// <summary>Fade at the end of the clip (ms, 0 = none).</summary>
+    public int FadeOutMs { get; set; }
+
+    /// <summary>Fade curve, -100..100: 0 linear, + fast change then a long thin tail, - holds then changes late.</summary>
+    public int FadeInCurve { get; set; }
+
+    public int FadeOutCurve { get; set; }
+
     public VibrationPulse Clone() => (VibrationPulse)MemberwiseClone();
+
+    /// <summary>Whole-clip FadeOut/FadeIn shapes (older patterns) become real fades with the same feel.</summary>
+    public void UpgradeShape()
+    {
+        if (this.Shape == PulseShape.FadeOut)
+        {
+            this.Shape = PulseShape.Constant;
+            this.FadeOutMs = this.DurationMs;
+            this.FadeOutCurve = 0;
+        }
+        else if (this.Shape == PulseShape.FadeIn)
+        {
+            this.Shape = PulseShape.Constant;
+            this.FadeInMs = this.DurationMs;
+            this.FadeInCurve = 0;
+        }
+    }
 }
 
 public enum RuleOrigin
@@ -71,23 +99,9 @@ public sealed class ActionRule
     /// <summary>Multiplier for this rule only, on top of the master strength.</summary>
     public float Strength { get; set; } = 1f;
 
-    public PulseAnchor Anchor { get; set; } = PulseAnchor.FirstHit;
+    public PulseAnchor Anchor { get; set; } = PulseAnchor.AnimationStart;
 
     public List<VibrationPulse> Pulses { get; set; } = new();
-}
-
-[Serializable]
-public sealed class AutoStrengths
-{
-    public float Weaponskill { get; set; } = 1f;
-
-    public float Spell { get; set; } = 1f;
-
-    public float Ability { get; set; } = 1f;
-
-    public float Support { get; set; } = 1f;
-
-    public float LimitBreak { get; set; } = 1f;
 }
 
 /// <summary>How many of the chosen cues must meet at a moment for it to be a hit.</summary>
@@ -107,8 +121,8 @@ public sealed class HitDetection
 
     public HitSource Sources { get; set; } = DefaultSources;
 
-    /// <summary>Target effects often start before or after the real impact: left out by default.</summary>
-    public bool IgnoreTargetEffect { get; set; } = true;
+    // v4 leftover, only read by the migration: "effect on the target" is now just a cue (off by default).
+    public bool IgnoreTargetEffect { get; set; }
 
     public HitMatch Match { get; set; } = HitMatch.Any;
 
@@ -117,16 +131,13 @@ public sealed class HitDetection
     /// <summary>Cues this close (frames) are the same moment.</summary>
     public int WindowFrames { get; set; } = 3;
 
-    /// <summary>When nothing else is found, vibrate on the damage number.</summary>
-    public bool FallbackToDamageNumber { get; set; } = true;
-
     [Newtonsoft.Json.JsonIgnore]
-    public HitSource EffectiveSources => this.IgnoreTargetEffect ? this.Sources & ~HitSource.TargetVfx : this.Sources;
+    public HitSource EffectiveSources => this.Sources;
 
     public bool Uses(HitSource s) => (this.EffectiveSources & s) != 0;
 
     [Newtonsoft.Json.JsonIgnore]
-    public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}|{this.FallbackToDamageNumber}";
+    public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}";
 }
 
 /// <summary>How a skill's sounds turn into vibration clips.</summary>
@@ -135,7 +146,8 @@ public sealed class SoundTuning
 {
     public const float DefaultThreshold = 0.12f;
     public const int DefaultFadeTailMs = 60;
-    public const int DefaultJoinGapMs = 60;
+    public const int JoinGapMs = 60;
+    public const float DefaultPeakWindow = 0.20f;
 
     /// <summary>Build patterns from the sound's bumps instead of the animation's hits.</summary>
     public bool Enabled { get; set; }
@@ -146,20 +158,40 @@ public sealed class SoundTuning
     /// <summary>Length of the fade-out after each block.</summary>
     public int FadeTailMs { get; set; } = DefaultFadeTailMs;
 
-    /// <summary>Loud parts closer together than this become one block.</summary>
-    public int JoinGapMs { get; set; } = DefaultJoinGapMs;
-
-    /// <summary>Also pulse on animation hits that have no sound of their own.</summary>
-    public bool PulseSilentHits { get; set; }
+    /// <summary>Peak-based vibration only uses peaks at least (1 - this) as loud as the skill's loudest peak.</summary>
+    public float PeakWindow { get; set; } = DefaultPeakWindow;
 
     [Newtonsoft.Json.JsonIgnore]
-    public string Key => $"{this.Enabled}|{this.Threshold:0.###}|{this.FadeTailMs}|{this.JoinGapMs}|{this.PulseSilentHits}";
+    public string Key => $"{this.Enabled}|{this.Threshold:0.###}|{this.FadeTailMs}|{this.PeakWindow:0.###}";
+}
+
+/// <summary>Everything one character changed: own patterns and switched-off skills.</summary>
+[Serializable]
+public sealed class CharacterPreset
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string World { get; set; } = string.Empty;
+
+    /// <summary>Patterns made or edited by the user, by action id.</summary>
+    public Dictionary<uint, ActionRule> Rules { get; set; } = new();
+
+    /// <summary>Skills switched off (their automatic pattern doesn't play).</summary>
+    public HashSet<uint> Disabled { get; set; } = new();
+
+    public DateTime Updated { get; set; } = DateTime.Now;
+
+    [Newtonsoft.Json.JsonIgnore]
+    public string Key => $"{this.Name}@{this.World}";
+
+    [Newtonsoft.Json.JsonIgnore]
+    public int ChangeCount => this.Rules.Count + this.Disabled.Count;
 }
 
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -173,10 +205,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool OnlyInCombat { get; set; }
 
-    /// <summary>Test also plays the skill's sounds.</summary>
-    public bool PreviewSound { get; set; } = true;
-
-    /// <summary>Volume of the Test sound, 0..100.</summary>
+    /// <summary>Volume of the Test sound, 0..100 (0 = no sound).</summary>
     public int PreviewVolume { get; set; } = 60;
 
     /// <summary>Delay of the Test vibration against its sound (ms), to make up for audio output latency.</summary>
@@ -188,23 +217,13 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool OnlyMyCharacter { get; set; } = true;
 
-    /// <summary>When a new skill starts, cut pulses still playing from an earlier one.</summary>
-    public bool CancelPreviousOnNewAction { get; set; }
-
-    /// <summary>Vibrate every skill automatically, timed to its hits.</summary>
-    public bool AutoEnabled { get; set; } = true;
-
-    /// <summary>Skills the user switched off in auto mode.</summary>
+    /// <summary>Skills switched off before character presets existed (moved into the first preset).</summary>
     public HashSet<uint> AutoDisabled { get; set; } = new();
-
-    public AutoStrengths AutoStrength { get; set; } = new();
 
     public SoundTuning Sound { get; set; } = new();
 
     public HitDetection Hits { get; set; } = new();
 
-    // v3 leftover: MultiHit is now chosen in Hits.Sources (off by default). Kept so old files load.
-    public bool UseMultiHit { get; set; }
 
     /// <summary>
     /// Off by default: skills whose animation already vibrates (built-in C120 entries)
@@ -212,12 +231,14 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool ReplaceModVibration { get; set; }
 
+    /// <summary>Generated patterns (shared by all characters; they depend on the installed mods).</summary>
     public Dictionary<uint, ActionRule> Rules { get; set; } = new();
 
-    // v1 leftovers, kept so old config files still load. No longer used.
-    public bool UseFallback { get; set; }
+    /// <summary>Each character's own changes, by "Name@World".</summary>
+    public Dictionary<string, CharacterPreset> Characters { get; set; } = new();
 
-    public ActionRule? Fallback { get; set; }
+    /// <summary>User patterns from before presets wait here for the first character that logs in.</summary>
+    public bool MoveOldEditsToFirstCharacter { get; set; }
 
     [Newtonsoft.Json.JsonIgnore]
     public int GeneratedCount => this.Rules.Values.Count(r => r.Origin == RuleOrigin.Generated);
@@ -232,8 +253,25 @@ public sealed class Configuration : IPluginConfiguration
             // v1 rules counted delays from the animation start.
             foreach (var r in this.Rules.Values)
                 r.Anchor = PulseAnchor.AnimationStart;
-            this.UseFallback = false;
-            this.Fallback = null;
+        }
+
+        if (this.Version < 5)
+        {
+            // Whole-clip fades become real fades.
+            foreach (var r in this.Rules.Values)
+            {
+                foreach (var p in r.Pulses)
+                    p.UpgradeShape();
+            }
+
+            // "Ignore effect on the target" is now just that cue being off.
+            if (this.Hits.IgnoreTargetEffect)
+                this.Hits.Sources &= ~HitSource.TargetVfx;
+            this.Hits.IgnoreTargetEffect = false;
+
+            // Own patterns and switched-off skills go into the first character's preset.
+            this.MoveOldEditsToFirstCharacter = this.Rules.Values.Any(r => r.Origin == RuleOrigin.User)
+                                                || this.Rules.Values.Any(r => !r.Enabled) || this.AutoDisabled.Count > 0;
         }
 
         this.Version = CurrentVersion;
