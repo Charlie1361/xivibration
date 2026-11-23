@@ -1,0 +1,17 @@
+{
+  "Author": "Charlie1361",
+  "Name": "XIVibration",
+  "Punchline": "Add controller vibration to any skill.",
+  "Description": "Make your gamepad rumble when you use a skill. Pick an action, design a vibration pattern (timing, strong and weak motor, shape), and test it right away. It uses the game's own pad vibration, so it works with every controller the game supports. It can also import the timing of C120 'Controller Vibration' entries from .tmb animation files.",
+  "Tags": [
+    "vibration",
+    "rumble",
+    "controller",
+    "gamepad",
+    "combat"
+  ],
+  "CategoryTags": [
+    "other"
+  ],
+  "RepoUrl": "https://github.com/Charlie1361/xivibration"
+}

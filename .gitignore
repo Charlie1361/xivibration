@@ -1,0 +1,9 @@
+# Third-party mods used for the analysis; not redistributed
+Classic DRG skill remake*/
+Classic Paladin skill remake*/
+
+bin/
+obj/
+*.user
+.vs/
+.idea/
