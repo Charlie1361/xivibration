@@ -42,9 +42,20 @@ public sealed class VibrationPulse
     public VibrationPulse Clone() => (VibrationPulse)MemberwiseClone();
 }
 
+public enum RuleOrigin
+{
+    /// <summary>Made or edited by the user. Never overwritten.</summary>
+    User,
+
+    /// <summary>Created by analysing the skill's animation. Re-analysis may replace it.</summary>
+    Generated,
+}
+
 [Serializable]
 public sealed class ActionRule
 {
+    public RuleOrigin Origin { get; set; } = RuleOrigin.User;
+
     public uint ActionId { get; set; }
 
     public bool Enabled { get; set; } = true;
@@ -74,7 +85,7 @@ public sealed class AutoStrengths
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -114,6 +125,12 @@ public sealed class Configuration : IPluginConfiguration
     public bool UseFallback { get; set; }
 
     public ActionRule? Fallback { get; set; }
+
+    [Newtonsoft.Json.JsonIgnore]
+    public int GeneratedCount => this.Rules.Values.Count(r => r.Origin == RuleOrigin.Generated);
+
+    [Newtonsoft.Json.JsonIgnore]
+    public int UserCount => this.Rules.Values.Count(r => r.Origin == RuleOrigin.User);
 
     public void Migrate()
     {

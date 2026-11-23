@@ -6,12 +6,9 @@ using Lumina.Excel.Sheets;
 
 namespace XIVibration.Timeline;
 
-/// <summary>What the plugin knows about one animation timeline.</summary>
+/// <summary>What the plugin knows about one animation timeline (with its sub-timelines).</summary>
 public sealed class ActionTimelineInfo
 {
-    /// <summary>Hit frame used when a timeline can't be read or has no C011 entry.</summary>
-    public const int DefaultHitFrame = 10;
-
     public uint TimelineId { get; init; }
 
     public string GamePath { get; init; } = string.Empty;
@@ -24,8 +21,11 @@ public sealed class ActionTimelineInfo
 
     public string? Error { get; init; }
 
-    /// <summary>C011 frames, sorted.</summary>
-    public IReadOnlyList<int> HitFrames { get; init; } = Array.Empty<int>();
+    /// <summary>All entries, sub-timelines included, times in frames from the animation start.</summary>
+    public IReadOnlyList<TmbParser.Entry> Entries { get; init; } = Array.Empty<TmbParser.Entry>();
+
+    /// <summary>Damage number (C011) frames.</summary>
+    public IReadOnlyList<int> FlyTextFrames { get; init; } = Array.Empty<int>();
 
     public IReadOnlyList<TmbImport.C120Entry> C120 { get; init; } = Array.Empty<TmbImport.C120Entry>();
 
@@ -33,11 +33,9 @@ public sealed class ActionTimelineInfo
 
     public bool HasBuiltInVibration => this.C120.Count > 0;
 
-    public int FirstHitFrame => this.HitFrames.Count > 0 ? this.HitFrames[0] : DefaultHitFrame;
+    public int FlyTextFrame => this.FlyTextFrames.Count > 0 ? this.FlyTextFrames[0] : 10;
 
-    public float FirstHitMs => this.FirstHitFrame * TmbParser.MsPerFrame;
-
-    public float LengthMs => Math.Max(this.LengthFrames, this.FirstHitFrame + 15) * TmbParser.MsPerFrame;
+    public float LengthMs => Math.Max(this.LengthFrames, 30) * TmbParser.MsPerFrame;
 
     public static readonly ActionTimelineInfo Missing = new() { Error = "No animation timeline" };
 }
@@ -55,10 +53,13 @@ public sealed class AnimationTimelines
     /// <summary>null = not tried yet.</summary>
     public bool? PenumbraConnected { get; private set; }
 
+    /// <summary>Bumped when the cache is cleared, so callers can tell their data is stale.</summary>
+    public int Generation { get; private set; }
+
     public void Clear()
     {
         this.byTimeline.Clear();
-        this.actionToTimeline.Clear();
+        this.Generation++;
     }
 
     /// <summary>ActionTimeline row the skill uses when it goes off (Action.AnimationEnd).</summary>
@@ -106,25 +107,16 @@ public sealed class AnimationTimelines
             return new ActionTimelineInfo { TimelineId = timelineId, GamePath = key, Error = "Timeline path depends on the weapon" };
 
         var gamePath = $"chara/action/{key}.tmb";
-        var resolved = this.Resolve(gamePath);
-        var fromMod = !string.Equals(Normalize(resolved), gamePath, StringComparison.OrdinalIgnoreCase);
+        var (data, resolved, fromMod) = this.Read(gamePath);
+        if (data == null)
+            return new ActionTimelineInfo { TimelineId = timelineId, GamePath = gamePath, ResolvedPath = resolved, FromMod = fromMod, Error = "File not found" };
 
         try
         {
-            byte[]? data = null;
-            if (fromMod && File.Exists(resolved))
-                data = File.ReadAllBytes(resolved);
-            data ??= Plugin.DataManager.GetFile(fromMod ? Normalize(resolved) : gamePath)?.Data;
-            if (data == null && fromMod)
-                data = Plugin.DataManager.GetFile(gamePath)?.Data;
-            if (data == null)
-                return new ActionTimelineInfo { TimelineId = timelineId, GamePath = gamePath, ResolvedPath = resolved, FromMod = fromMod, Error = "File not found" };
-
-            var entries = TmbParser.Parse(data);
-            var hits = entries.Where(e => e.Tag == "C011").Select(e => (int)e.TimeFrames).Distinct().OrderBy(f => f).ToList();
-            var end = entries.Where(e => e.Tag == "C131").Select(e => (int)e.TimeFrames).DefaultIfEmpty(0).Max();
-            if (end == 0)
-                end = entries.Select(e => (int)e.TimeFrames).DefaultIfEmpty(0).Max();
+            var entries = TmbParser.ParseWithSubTimelines(data, p => this.Read(p).Data);
+            var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).Distinct().OrderBy(f => f).ToList();
+            var end = entries.Where(e => e.Tag is "C010" && e.Fields.Length > 0).Select(e => e.TimeFrames + e.Fields[0]).DefaultIfEmpty(0).Max();
+            end = Math.Max(end, entries.Select(e => e.TimeFrames).DefaultIfEmpty(0).Max());
 
             return new ActionTimelineInfo
             {
@@ -133,7 +125,8 @@ public sealed class AnimationTimelines
                 ResolvedPath = resolved,
                 FromMod = fromMod,
                 Found = true,
-                HitFrames = hits,
+                Entries = entries,
+                FlyTextFrames = flyText,
                 C120 = TmbImport.FromEntries(entries),
                 LengthFrames = end,
             };
@@ -141,6 +134,27 @@ public sealed class AnimationTimelines
         catch (Exception ex)
         {
             return new ActionTimelineInfo { TimelineId = timelineId, GamePath = gamePath, ResolvedPath = resolved, FromMod = fromMod, Error = ex.Message };
+        }
+    }
+
+    /// <summary>Reads a game file the way the game would load it for the player (mods included).</summary>
+    private (byte[]? Data, string Resolved, bool FromMod) Read(string gamePath)
+    {
+        var resolved = this.Resolve(gamePath);
+        var fromMod = !string.Equals(Normalize(resolved), gamePath, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            byte[]? data = null;
+            if (fromMod && File.Exists(resolved))
+                data = File.ReadAllBytes(resolved);
+            if (data == null && fromMod)
+                data = Plugin.DataManager.GetFile(Normalize(resolved))?.Data;
+            data ??= Plugin.DataManager.GetFile(gamePath)?.Data;
+            return (data, resolved, fromMod);
+        }
+        catch
+        {
+            return (null, resolved, fromMod);
         }
     }
 

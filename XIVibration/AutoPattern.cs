@@ -5,124 +5,108 @@ using XIVibration.Timeline;
 
 namespace XIVibration;
 
-public enum AutoSource
-{
-    /// <summary>Hit frames (C011) read from the animation.</summary>
-    Animation,
-
-    /// <summary>Per-hit timings from the MultiHit plugin.</summary>
-    MultiHit,
-
-    /// <summary>The animation's own C120 vibration frames (only used when replacing it).</summary>
-    BuiltInFrames,
-
-    /// <summary>No animation data, default hit delay.</summary>
-    Default,
-}
-
 public sealed record AutoResult(
     List<VibrationPulse> Pulses,
     float Scale,
-    List<float> HitMs,
-    AutoSource Source,
-    bool KeptBuiltIn,
-    List<VibrationPulse> BuiltInPreview);
+    List<HitPoint> Hits,
+    bool HasBuiltIn,
+    List<VibrationPulse> BuiltInPreview)
+{
+    public List<float> HitMs => this.Hits.Select(h => h.Frame * TmbParser.MsPerFrame).ToList();
 
-/// <summary>Builds the automatic vibration for a skill, timed to its hits.</summary>
+    public string SourceText
+    {
+        get
+        {
+            var all = this.Hits.Aggregate(HitSource.None, (a, h) => a | h.Sources);
+            if (all == HitSource.None)
+                return "no animation data, default timing";
+            var parts = new List<string>();
+            if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
+            if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
+            if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound)) != 0) parts.Add("impacts in the animation");
+            if (all.HasFlag(HitSource.FlyText)) parts.Add("damage number");
+            if (all.HasFlag(HitSource.CasterVfx)) parts.Add("effect beats");
+            return string.Join(", ", parts);
+        }
+    }
+}
+
+/// <summary>Builds the automatic vibration for a skill: one pulse on every hit of its animation.</summary>
 public static class AutoPattern
 {
     private readonly record struct Level(int Strong, int Weak);
 
     private sealed record Profile(Level Main, int MainMs, PulseShape MainShape, Level Light, Level Heavy, int MinMs, int MaxMs);
 
-    private static readonly Profile Weaponskill = new(new(60, 65), 140, PulseShape.Constant, new(25, 50), new(80, 80), 80, 170);
-    private static readonly Profile Spell = new(new(50, 60), 180, PulseShape.FadeOut, new(20, 45), new(70, 75), 90, 200);
-    private static readonly Profile Ability = new(new(70, 70), 200, PulseShape.Constant, new(30, 55), new(90, 85), 90, 220);
-    private static readonly Profile BigAbility = new(new(100, 90), 380, PulseShape.FadeOut, new(40, 60), new(100, 90), 100, 380);
-    private static readonly Profile Support = new(new(15, 40), 90, PulseShape.Constant, new(10, 30), new(25, 50), 70, 110);
+    private static readonly Profile Weaponskill = new(new(65, 70), 150, PulseShape.Constant, new(25, 50), new(85, 85), 70, 180);
+    private static readonly Profile Spell = new(new(55, 65), 190, PulseShape.FadeOut, new(20, 45), new(75, 80), 80, 210);
+    private static readonly Profile Ability = new(new(75, 75), 210, PulseShape.Constant, new(30, 55), new(95, 90), 80, 230);
+    private static readonly Profile BigAbility = new(new(100, 90), 380, PulseShape.FadeOut, new(40, 60), new(100, 95), 90, 380);
+    private static readonly Profile Support = new(new(25, 50), 110, PulseShape.Constant, new(12, 35), new(40, 60), 70, 140);
     private static readonly Profile LimitBreak = new(new(100, 100), 600, PulseShape.FadeOut, new(60, 70), new(100, 100), 150, 600);
 
-    public static AutoResult Build(ActionInfo? info, ActionTimelineInfo tl, IReadOnlyList<MultiHitData.Hit>? multiHit, Configuration cfg)
+    public static AutoResult Build(ActionInfo? info, ActionTimelineInfo tl, HitAnalyzer.MultiHitTable? multiHit, Configuration cfg)
     {
         var (profile, scale) = Pick(info, cfg.AutoStrength);
-        var builtInPreview = TmbImport.ToPulses(tl.C120);
+        var hostile = info?.CanTargetHostile ?? true;
+        var hits = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames);
+        var pulses = ToPulses(hits, profile, hostile, info?.IsAoE == true);
+        return new AutoResult(pulses, scale, hits, tl.HasBuiltInVibration, TmbImport.ToPulses(tl.C120));
+    }
 
-        // Hit frames and the weight (damage share) of each.
-        List<(int Frame, float Weight)> hits;
-        AutoSource source;
-        if (multiHit is { Count: > 0 })
-        {
-            var max = Math.Max(1, multiHit.Max(h => h.Percent));
-            hits = multiHit.Select(h => (tl.FirstHitFrame + h.Frame, h.Percent / (float)max)).ToList();
-            source = AutoSource.MultiHit;
-        }
-        else if (cfg.ReplaceModVibration && tl.HasBuiltInVibration && tl.C120.Count > 1)
-        {
-            // The mod author placed these on the hits; keep the timing, use the plugin's feel.
-            hits = tl.C120.Select(c => ((int)c.TimeFrames, WaveWeight(c.WaveType))).ToList();
-            source = AutoSource.BuiltInFrames;
-        }
-        else if (tl.HitFrames.Count > 0)
-        {
-            hits = tl.HitFrames.Select(f => (f, 1f)).ToList();
-            source = AutoSource.Animation;
-        }
-        else
-        {
-            hits = new() { (ActionTimelineInfo.DefaultHitFrame, 1f) };
-            source = AutoSource.Default;
-        }
-
-        hits = hits.OrderBy(h => h.Frame).ToList();
-        var hitMs = hits.Select(h => h.Frame * TmbParser.MsPerFrame).ToList();
-
-        if (tl.HasBuiltInVibration && !cfg.ReplaceModVibration)
-            return new AutoResult(new(), scale, hitMs, source, true, builtInPreview);
-
-        var aoe = info?.IsAoE == true ? 10 : 0;
+    private static List<VibrationPulse> ToPulses(List<HitPoint> hits, Profile profile, bool hostile, bool aoe)
+    {
         var pulses = new List<VibrationPulse>();
         var single = hits.Count == 1;
         for (var i = 0; i < hits.Count; i++)
         {
-            var (frame, weight) = hits[i];
-            var start = frame * TmbParser.MsPerFrame;
+            var hit = hits[i];
+            var weight = hit.Weight;
+            var last = i == hits.Count - 1;
             Level level;
             int duration;
-            PulseShape shape;
+            var shape = PulseShape.Constant;
+
             if (single)
             {
-                level = profile.Main;
+                level = Lerp(profile.Light, profile.Main, Math.Max(weight, 0.6f));
                 duration = profile.MainMs;
                 shape = profile.MainShape;
             }
             else
             {
+                // The last hit of an attack is the finisher.
+                if (last && hostile)
+                {
+                    weight = Math.Max(weight, 0.85f);
+                    shape = PulseShape.FadeOut;
+                }
+
                 level = Lerp(profile.Light, profile.Heavy, weight);
                 duration = (int)MathF.Round(profile.MinMs + (profile.MaxMs - profile.MinMs) * weight);
-                var biggest = weight >= 0.999f && (i == hits.Count - 1 || hits.Skip(i + 1).All(h => h.Weight < 0.999f));
-                shape = biggest ? PulseShape.FadeOut : PulseShape.Constant;
-                if (biggest)
+                if (shape == PulseShape.FadeOut)
                     duration = (int)(duration * 1.5f);
             }
 
             // Keep hits apart: a pulse never runs into the next hit.
-            if (i + 1 < hits.Count)
+            if (!last)
             {
-                var gap = (hits[i + 1].Frame - frame) * TmbParser.MsPerFrame;
-                duration = (int)MathF.Min(duration, MathF.Max(45f, gap - 20f));
+                var gap = (hits[i + 1].Frame - hit.Frame) * TmbParser.MsPerFrame;
+                duration = (int)MathF.Min(duration, MathF.Max(40f, gap - 15f));
             }
 
             pulses.Add(new VibrationPulse
             {
-                DelayMs = (int)MathF.Round(start),
-                DurationMs = Math.Max(45, duration),
+                DelayMs = (int)MathF.Round(hit.Frame * TmbParser.MsPerFrame),
+                DurationMs = Math.Max(40, duration),
                 Strong = Math.Clamp(level.Strong, 0, 100),
-                Weak = Math.Clamp(level.Weak + aoe, 0, 100),
+                Weak = Math.Clamp(level.Weak + (aoe ? 10 : 0), 0, 100),
                 Shape = shape,
             });
         }
 
-        return new AutoResult(pulses, scale, hitMs, source, false, builtInPreview);
+        return pulses;
     }
 
     private static (Profile Profile, float Scale) Pick(ActionInfo? info, AutoStrengths s)
@@ -143,9 +127,6 @@ public static class AutoPattern
             _ => (Weaponskill, s.Weaponskill),
         };
     }
-
-    // C120 wave types: 1 heavy, 3 medium, 2 light.
-    private static float WaveWeight(int waveType) => waveType switch { 1 => 1f, 3 => 0.6f, _ => 0.3f };
 
     private static Level Lerp(Level a, Level b, float t)
         => new((int)MathF.Round(a.Strong + (b.Strong - a.Strong) * t), (int)MathF.Round(a.Weak + (b.Weak - a.Weak) * t));

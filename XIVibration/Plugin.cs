@@ -17,7 +17,7 @@ public enum SkillMode
     /// <summary>The user's own pattern.</summary>
     Custom,
 
-    /// <summary>Automatic pattern on the hits.</summary>
+    /// <summary>Pattern made from the animation's hits.</summary>
     Auto,
 
     /// <summary>The animation already vibrates; left alone.</summary>
@@ -60,6 +60,7 @@ public sealed class Plugin : IDalamudPlugin
     public ActionCatalog Catalog { get; } = new();
     public AnimationTimelines Timelines { get; } = new();
     public MultiHitData MultiHit { get; }
+    public SkillAnalysis Analysis { get; }
 
     /// <summary>The last skill you used and what was played for it.</summary>
     public SkillPlan? LastPlan { get; private set; }
@@ -74,17 +75,20 @@ public sealed class Plugin : IDalamudPlugin
         this.Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.Config.Migrate();
 
-        this.MultiHit = new MultiHitData(PluginInterface.ConfigFile.DirectoryName ?? PluginInterface.GetPluginConfigDirectory());
+        this.MultiHit = new MultiHitData(
+            PluginInterface.ConfigFile.DirectoryName ?? PluginInterface.GetPluginConfigDirectory(),
+            this.Timelines.TimelineOf);
         this.Engine = new VibrationEngine(this.Config);
         this.Watcher = new ActionWatcher();
         this.Watcher.LocalActionUsed += this.OnLocalActionUsed;
+        this.Analysis = new SkillAnalysis(this);
 
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
 
         CommandManager.AddHandler(Command, new CommandInfo(this.OnCommand)
         {
-            HelpMessage = "Open XIVibration. Also: /xivib on | off | toggle | test | stop",
+            HelpMessage = "Open XIVibration. Also: /xivib on | off | toggle | test | stop | analyse",
         });
 
         PluginInterface.UiBuilder.Draw += this.windows.Draw;
@@ -94,49 +98,76 @@ public sealed class Plugin : IDalamudPlugin
         ClientState.TerritoryChanged += this.OnTerritoryChanged;
     }
 
-    private void OnFrameworkUpdate(IFramework framework) => this.Engine.Update();
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        this.Analysis.Update();
+        this.Engine.Update();
+    }
 
     // Mods can be switched while zoning; re-read animations on the next use.
     private void OnTerritoryChanged(uint territory) => this.Timelines.Clear();
 
+    public HitAnalyzer.MultiHitTable? MultiHitFor(uint actionId)
+        => this.Config.UseMultiHit && this.MultiHit.TryGet(actionId, out var t) ? t : null;
+
+    private readonly Dictionary<(uint Action, uint Timeline), (int Key, AutoResult Result)> autoCache = new();
+
+    /// <summary>The automatic pattern for a skill, from its current animation.</summary>
+    public AutoResult BuildAuto(uint actionId, ActionTimelineInfo tl)
+    {
+        var s = this.Config.AutoStrength;
+        var key = HashCode.Combine(
+            this.Timelines.Generation,
+            this.MultiHit.Version,
+            this.Config.UseMultiHit,
+            HashCode.Combine(s.Weaponskill, s.Spell, s.Ability, s.Support, s.LimitBreak));
+        if (this.autoCache.TryGetValue((actionId, tl.TimelineId), out var c) && c.Key == key)
+            return c.Result;
+
+        var result = AutoPattern.Build(this.Catalog.Get(actionId), tl, this.MultiHitFor(actionId), this.Config);
+        this.autoCache[(actionId, tl.TimelineId)] = (key, result);
+        return result;
+    }
+
     public SkillPlan PlanFor(uint actionId, uint playedTimeline = 0)
     {
         var tl = this.Timelines.ForAction(actionId);
-        if ((!tl.Found || tl.HitFrames.Count == 0) && playedTimeline != 0 && playedTimeline != tl.TimelineId)
+        if (!tl.Found && playedTimeline != 0 && playedTimeline != tl.TimelineId)
         {
             var played = this.Timelines.ForTimeline(playedTimeline);
             if (played.Found)
                 tl = played;
         }
 
-        var info = this.Catalog.Get(actionId);
-        IReadOnlyList<MultiHitData.Hit>? hits = null;
-        if (this.Config.UseMultiHit && this.MultiHit.TryGet(actionId, out var h))
-            hits = h;
-
-        var auto = AutoPattern.Build(info, tl, hits, this.Config);
+        var auto = this.BuildAuto(actionId, tl);
+        var keepBuiltIn = tl.HasBuiltInVibration && !this.Config.ReplaceModVibration;
 
         if (this.Config.Rules.TryGetValue(actionId, out var rule))
         {
-            var offset = rule.Anchor == PulseAnchor.FirstHit ? (int)MathF.Round(tl.FirstHitMs) : 0;
+            var firstHit = auto.Hits.Count > 0 ? (int)MathF.Round(auto.Hits[0].Frame * TmbParser.MsPerFrame) : 0;
+            var offset = rule.Anchor == PulseAnchor.FirstHit ? firstHit : 0;
             var pulses = rule.Pulses.Select(p =>
             {
                 var c = p.Clone();
                 c.DelayMs += offset;
                 return c;
             }).ToList();
-            return new SkillPlan(actionId, rule.Enabled ? SkillMode.Custom : SkillMode.Off, tl, auto, rule, pulses, rule.Strength);
+
+            if (rule.Origin == RuleOrigin.User)
+                return new SkillPlan(actionId, rule.Enabled ? SkillMode.Custom : SkillMode.Off, tl, auto, rule, pulses, rule.Strength);
+
+            // A pattern made from the animation: follows the auto settings.
+            var mode = !rule.Enabled || !this.Config.AutoEnabled ? SkillMode.Off
+                : keepBuiltIn ? SkillMode.BuiltIn
+                : SkillMode.Auto;
+            return new SkillPlan(actionId, mode, tl, auto, rule, pulses, rule.Strength * auto.Scale);
         }
 
-        SkillMode mode;
-        if (!this.Config.AutoEnabled || this.Config.AutoDisabled.Contains(actionId))
-            mode = SkillMode.Off;
-        else if (auto.KeptBuiltIn)
-            mode = SkillMode.BuiltIn;
-        else
-            mode = SkillMode.Auto;
-
-        return new SkillPlan(actionId, mode, tl, auto, null, auto.Pulses, auto.Scale);
+        // Not analysed yet: build it live.
+        var liveMode = !this.Config.AutoEnabled || this.Config.AutoDisabled.Contains(actionId) ? SkillMode.Off
+            : keepBuiltIn ? SkillMode.BuiltIn
+            : SkillMode.Auto;
+        return new SkillPlan(actionId, liveMode, tl, auto, null, auto.Pulses, auto.Scale);
     }
 
     private void OnLocalActionUsed(uint actionId, uint playedTimeline)
@@ -178,6 +209,11 @@ public sealed class Plugin : IDalamudPlugin
                 break;
             case "stop":
                 this.Engine.StopAll();
+                break;
+            case "analyse":
+            case "analyze":
+                this.Analysis.ReanalyseAll();
+                Chat.Print("[XIVibration] Re-analysing all skills. Your own patterns are kept.");
                 break;
             default:
                 this.mainWindow.Toggle();

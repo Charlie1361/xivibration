@@ -17,7 +17,7 @@ public static class TmbImport
     public static List<C120Entry> FromEntries(IEnumerable<TmbParser.Entry> entries)
         => entries
             .Where(e => e.Tag == "C120" && e.Fields.Length >= 3)
-            .Select(e => new C120Entry(e.Id, e.TimeFrames, e.Fields[0], e.Fields[1], e.Fields[2]))
+            .Select(e => new C120Entry(e.Id, (ushort)Math.Clamp(e.TimeFrames, 0, ushort.MaxValue), e.Fields[0], e.Fields[1], e.Fields[2]))
             .OrderBy(e => e.TimeFrames)
             .ToList();
 

@@ -76,6 +76,16 @@ public sealed class MainWindow : Window, IDisposable
 
     public void Dispose() => this.SaveNow();
 
+    /// <summary>The rule shown in the editor; editing a generated one makes it the user's own.</summary>
+    private ActionRule? editingRule;
+
+    private void MarkEdited()
+    {
+        if (this.editingRule is { Origin: RuleOrigin.Generated } r)
+            r.Origin = RuleOrigin.User;
+        this.MarkDirty();
+    }
+
     private void MarkDirty()
     {
         this.dirty = true;
@@ -389,6 +399,7 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+        this.editingRule = plan.Rule;
         if (plan.Rule != null)
             this.DrawCustomEditor(plan, plan.Rule);
         else
@@ -401,13 +412,7 @@ public sealed class MainWindow : Window, IDisposable
         var hits = plan.Auto.HitMs.Count == 0
             ? "-"
             : string.Join(", ", plan.Auto.HitMs.Select(ms => $"{ms / 1000f:0.00}s"));
-        var source = plan.Auto.Source switch
-        {
-            AutoSource.MultiHit => "MultiHit hit table",
-            AutoSource.BuiltInFrames => "the animation's vibration frames",
-            AutoSource.Animation => "animation hit frame",
-            _ => "default (no animation data)",
-        };
+        var source = plan.Auto.SourceText;
         ImGui.TextUnformatted($"Hits at {hits}  ({source})");
 
         if (tl.GamePath.Length > 0)
@@ -435,7 +440,7 @@ public sealed class MainWindow : Window, IDisposable
             this.SetSkillOn(id, on);
 
         ImGui.SameLine();
-        var builtIn = plan.Mode == SkillMode.BuiltIn || (plan.Mode == SkillMode.Off && plan.Auto.KeptBuiltIn);
+        var builtIn = plan.Auto.HasBuiltIn && !this.Config.ReplaceModVibration;
         var preview = builtIn ? plan.Auto.BuiltInPreview : plan.Pulses;
         using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
         {
@@ -518,23 +523,46 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
+        var generated = rule.Origin == RuleOrigin.Generated;
         var ctrl = ImGui.GetIO().KeyCtrl;
-        using (ImRaii.Disabled(!ctrl))
+        using (ImRaii.Disabled(!generated && !ctrl))
         {
-            if (ImGui.Button("Reset to auto"))
+            if (ImGui.Button(generated ? "Re-analyse" : "Reset to auto"))
             {
-                this.Config.Rules.Remove(rule.ActionId);
-                this.MarkDirty();
+                this.plugin.Timelines.Clear();
+                this.plugin.Analysis.Regenerate(rule.ActionId);
                 return;
             }
         }
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip("Hold Ctrl and click to delete your pattern and go back to automatic.");
+        {
+            ImGui.SetTooltip(generated
+                ? "Read the skill's current animation again and rebuild this pattern."
+                : "Hold Ctrl and click to throw away your pattern and rebuild it from the animation.");
+        }
+
+        using (ImRaii.PushColor(ImGuiCol.Text, plan.Mode == SkillMode.BuiltIn ? BuiltInColor : Dim))
+        {
+            if (plan.Mode == SkillMode.BuiltIn)
+            {
+                ImGui.TextWrapped("This skill's animation already has its own vibration (from a mod or the game). It is kept as it is and " +
+                                  "this pattern doesn't play. It plays instead when \"Replace built-in vibration\" is on in Settings.");
+            }
+            else if (generated)
+            {
+                ImGui.TextWrapped("Made automatically from this skill's animation, one pulse per hit. " +
+                                  "Edit anything below and it becomes your own pattern, which re-analysis never changes.");
+            }
+            else
+            {
+                ImGui.TextWrapped("Your own pattern.");
+            }
+        }
 
         // Anchor
         ImGui.SetNextItemWidth(200 * scale);
-        var firstHit = (int)MathF.Round(plan.Timeline.FirstHitMs);
+        var firstHit = plan.Auto.Hits.Count > 0 ? (int)MathF.Round(plan.Auto.Hits[0].Frame * TmbParser.MsPerFrame) : 0;
         using (var combo = ImRaii.Combo("Delays count from", rule.Anchor == PulseAnchor.FirstHit ? "the first hit" : "the animation start"))
         {
             if (combo)
@@ -564,7 +592,7 @@ public sealed class MainWindow : Window, IDisposable
         foreach (var p in rule.Pulses)
             p.DelayMs = Math.Max(0, p.DelayMs + shift);
         rule.Anchor = anchor;
-        this.MarkDirty();
+        this.MarkEdited();
     }
 
     private void Test(IReadOnlyList<VibrationPulse> pulses, float strength)
@@ -590,7 +618,7 @@ public sealed class MainWindow : Window, IDisposable
                     {
                         rule.Pulses = Presets.Copy(p);
                         rule.Anchor = PulseAnchor.FirstHit;
-                        this.MarkDirty();
+                        this.MarkEdited();
                     }
 
                     if (ImGui.IsItemHovered())
@@ -608,7 +636,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.Button("Paste") && this.clipboard != null)
             {
                 rule.Pulses = Configuration.ClonePulses(this.clipboard);
-                this.MarkDirty();
+                this.MarkEdited();
             }
         }
 
@@ -663,7 +691,7 @@ public sealed class MainWindow : Window, IDisposable
                     else
                         rule.Pulses = pulses;
                     rule.Pulses.Sort((a, b) => a.DelayMs.CompareTo(b.DelayMs));
-                    this.MarkDirty();
+                    this.MarkEdited();
                     this.importMessage = $"Imported {entries.Count} pulse(s): " + string.Join(", ",
                         entries.Select(e => $"frame {e.TimeFrames} for {e.DurationFrames}f, type {e.WaveType}"));
                 }
@@ -785,14 +813,14 @@ public sealed class MainWindow : Window, IDisposable
                 Strong = last?.Strong ?? 60,
                 Weak = last?.Weak ?? 60,
             });
-            this.MarkDirty();
+            this.MarkEdited();
         }
 
         ImGui.SameLine();
         if (ImGui.Button("Sort by time"))
         {
             rule.Pulses.Sort((a, b) => a.DelayMs.CompareTo(b.DelayMs));
-            this.MarkDirty();
+            this.MarkEdited();
         }
 
         ImGui.SameLine();
@@ -837,7 +865,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.DragInt("##delay", ref delay, 5f, 0, 10000, "%d"))
             {
                 p.DelayMs = Math.Clamp(delay, 0, 10000);
-                this.MarkDirty();
+                this.MarkEdited();
             }
 
             ImGui.TableNextColumn();
@@ -846,7 +874,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.DragInt("##dur", ref dur, 5f, 16, 5000, "%d"))
             {
                 p.DurationMs = Math.Clamp(dur, 16, 5000);
-                this.MarkDirty();
+                this.MarkEdited();
             }
 
             ImGui.TableNextColumn();
@@ -857,7 +885,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.SliderInt("##strong", ref strong, 0, 100, "%d%%"))
                 {
                     p.Strong = strong;
-                    this.MarkDirty();
+                    this.MarkEdited();
                 }
             }
 
@@ -869,7 +897,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.SliderInt("##weak", ref weak, 0, 100, "%d%%"))
                 {
                     p.Weak = weak;
-                    this.MarkDirty();
+                    this.MarkEdited();
                 }
             }
 
@@ -884,7 +912,7 @@ public sealed class MainWindow : Window, IDisposable
                         if (ImGui.Selectable(ShapeName(s), s == p.Shape))
                         {
                             p.Shape = s;
-                            this.MarkDirty();
+                            this.MarkEdited();
                         }
                     }
                 }
@@ -907,13 +935,13 @@ public sealed class MainWindow : Window, IDisposable
         if (moveUp is { } u)
         {
             (rule.Pulses[u - 1], rule.Pulses[u]) = (rule.Pulses[u], rule.Pulses[u - 1]);
-            this.MarkDirty();
+            this.MarkEdited();
         }
 
         if (moveDown is { } d)
         {
             (rule.Pulses[d + 1], rule.Pulses[d]) = (rule.Pulses[d], rule.Pulses[d + 1]);
-            this.MarkDirty();
+            this.MarkEdited();
         }
 
         if (duplicate is { } c2)
@@ -921,13 +949,13 @@ public sealed class MainWindow : Window, IDisposable
             var copy = rule.Pulses[c2].Clone();
             copy.DelayMs += rule.Pulses[c2].DurationMs + 50;
             rule.Pulses.Insert(c2 + 1, copy);
-            this.MarkDirty();
+            this.MarkEdited();
         }
 
         if (remove is { } r)
         {
             rule.Pulses.RemoveAt(r);
-            this.MarkDirty();
+            this.MarkEdited();
         }
     }
 
@@ -980,10 +1008,27 @@ public sealed class MainWindow : Window, IDisposable
         this.Strength("Buffs, heals, movement", s.Support, v => s.Support = v, scale);
         this.Strength("Limit breaks", s.LimitBreak, v => s.LimitBreak = v, scale);
 
-        if (ImGui.Button("Re-scan animations"))
-            this.plugin.Timelines.Clear();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Read the skills' animation files again, for example after changing mods. Also happens on every zone change.");
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Skill analysis");
+        ImGui.Separator();
+        var an = this.plugin.Analysis;
+        if (an.Running)
+            ImGui.ProgressBar(an.Total == 0 ? 0f : an.Done / (float)an.Total, new Vector2(300 * scale, 0), $"{an.Done}/{an.Total}");
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+            ImGui.TextWrapped(an.Status);
+
+        var ctrl = ImGui.GetIO().KeyCtrl;
+        using (ImRaii.Disabled(!ctrl || an.Running))
+        {
+            if (ImGui.Button("Re-analyse all skills"))
+                an.ReanalyseAll();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Hold Ctrl and click. Reads every skill's current animation again (for example after changing mods)\n" +
+                             "and rebuilds the automatic patterns. Patterns you edited yourself are kept.");
+        }
 
         ImGui.Spacing();
         ImGui.TextUnformatted("Motor test");
@@ -1036,7 +1081,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted($"{this.plugin.Catalog.NameOf(plan.ActionId)} (ID {plan.ActionId}) at {this.plugin.LastPlanTime:HH:mm:ss}");
         ImGui.TextUnformatted($"Mode: {plan.Mode}" + (plan.Mode == SkillMode.BuiltIn ? "  (built-in kept, 0 plugin pulses)" : $"  ({plan.Pulses.Count} pulse(s))"));
         ImGui.TextUnformatted($"Timeline #{tl.TimelineId}: {tl.ResolvedPath ?? tl.GamePath}" + (tl.FromMod ? "  (mod)" : string.Empty));
-        ImGui.TextUnformatted($"Hit frames: {(tl.HitFrames.Count == 0 ? "-" : string.Join(", ", tl.HitFrames))}   Built-in vibration entries: {tl.C120.Count}   Source: {plan.Auto.Source}");
+        ImGui.TextUnformatted($"Hits (frames): {string.Join(", ", plan.Auto.Hits.Select(h => h.Frame))}   from: {plan.Auto.SourceText}   built-in vibration entries: {tl.C120.Count}");
         if (plan.Pulses.Count > 0)
             ImGui.TextUnformatted("Pulses at: " + string.Join(", ", plan.Pulses.Select(p => $"{p.DelayMs} ms")));
         if (tl.Error != null)
@@ -1081,19 +1126,23 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextWrapped("How it works");
         ImGui.Separator();
         ImGui.TextWrapped(
-            "When you use a skill, the plugin reads that skill's animation timeline (.tmb). Through Penumbra it reads the modded one if " +
-            "you have a mod for it. The timeline marks the frame where the hit lands, and the plugin vibrates the controller on that frame. " +
-            "If the MultiHit plugin has a hit table for the skill, every hit in it gets its own pulse, stronger for the hits that do more damage.");
+            "After you log in, the plugin analyses the animation of every skill of every job (the one actually loaded, through " +
+            "Penumbra if you use mods) and saves a vibration pattern for each skill: one pulse on every hit. Skills that already " +
+            "have a pattern are not touched.");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Hits are found from what happens in the animation: the target's hit reaction, effects and sounds that land on the " +
+            "target, the damage number, and the parts the animation plays from other timelines. Buffs and heals follow their " +
+            "effect beats. If the MultiHit plugin has a hit table for a skill, each hit in it gets its own pulse too, " +
+            "harder for the hits that do more damage.");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +
-            "follows the game's vibration setting.");
+            "follows the game's vibration setting. Animations that already vibrate on their own are left alone unless you turn on " +
+            "\"Replace built-in vibration\" in Settings.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Some animations already vibrate on their own. Those are left alone unless you turn on \"Replace built-in vibration\" in Settings.");
-        ImGui.Spacing();
-        ImGui.TextWrapped(
-            "Every skill of every job vibrates out of the box. In the Skills tab you can switch single skills off, test them, " +
-            "or click Customize to design your own pattern.");
+            "In the Skills tab you can switch single skills off, test them, and edit any pattern. An edited pattern is yours and " +
+            "is never changed by re-analysis.");
     }
 }
