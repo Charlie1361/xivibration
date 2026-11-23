@@ -195,6 +195,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnLocalActionUsed(uint actionId, uint playedTimeline)
     {
+        // My animation is running: the game's own vibration for it (built-in in a mod, limit breaks) may play.
+        this.Engine.OpenLocalWindow(Clock.NowMs + (long)this.Timelines.ForAction(actionId).LengthMs + 500);
+
         if (!this.Config.Enabled)
             return;
         if (this.Config.OnlyInCombat && !Condition[ConditionFlag.InCombat])

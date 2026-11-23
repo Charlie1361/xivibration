@@ -28,6 +28,7 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 - **Patterns stay current:** generated patterns are rebuilt automatically when a skill's animation changes (another mod or option) or the analysis improves. Patterns you edited are never touched.
 - **Strength follows the skill type:** weaponskills, spells, abilities (long cooldowns hit harder), buffs and heals (lighter), and limit breaks. The last hit of an attack is the finisher.
 - **The vibration goes through the game's own controller function,** so it works with every controller the game supports and follows the game's vibration setting.
+- **Only your character vibrates.** Mods apply to every character's animations, so a mod with built-in vibration would also make the game rumble when other players or NPCs near you use that skill. The plugin lets the game's own vibration through only while one of your skills is playing (Settings → "Only my character's animations may vibrate", on by default).
 - **Animations that already vibrate on their own are left alone.** Turn on *Replace built-in vibration* in Settings to use the plugin's pattern for those too.
 
 ## Features

@@ -971,6 +971,13 @@ public sealed class MainWindow : Window, IDisposable
 
         this.Check("Follow the game's \"Enable vibration\" setting", this.Config.RespectGameSetting, v => this.Config.RespectGameSetting = v);
         this.Check("Only vibrate in combat", this.Config.OnlyInCombat, v => this.Config.OnlyInCombat = v);
+        this.Check("Only my character's animations may vibrate", this.Config.OnlyMyCharacter, v => this.Config.OnlyMyCharacter = v);
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Mods apply to every character's animations, so a mod with built-in vibration also makes the game\n" +
+                             "vibrate when other players or NPCs near you use that skill. With this on, the game's own vibration\n" +
+                             "only gets through while one of your skills is playing.");
+        }
         this.Check("A new skill cuts off the previous skill's vibration", this.Config.CancelPreviousOnNewAction, v => this.Config.CancelPreviousOnNewAction = v);
 
         ImGui.Spacing();
@@ -1116,6 +1123,9 @@ public sealed class MainWindow : Window, IDisposable
         StatusLine("Gamepad device", e.PadFound, e.PadFound ? "found" : "not found");
         StatusLine("Vibration hook", e.HookActive, e.HookActive ? "active" : e.LastError ?? "not active, calling it directly");
         StatusLine("Skill hook", this.plugin.Watcher.HookActive, this.plugin.Watcher.HookActive ? "active" : this.plugin.Watcher.LastError ?? "failed");
+        StatusLine("Vibration from other characters", true, this.Config.OnlyMyCharacter
+            ? $"blocked {this.plugin.Engine.BlockedFromOthers} time(s) this session"
+            : "allowed (\"Only my character's animations may vibrate\" is off)");
         StatusLine("Animation timing hook", this.plugin.Sync.HookActive, this.plugin.Sync.HookActive ? "active, patterns start with the animation" : (this.plugin.Sync.LastError ?? "failed") + ", timing from the server message");
         var gv = e.GameVibrationEnabled;
         StatusLine("Game option: Enable vibration", gv != false, gv == null ? "could not read" : gv.Value ? "on" : "off");

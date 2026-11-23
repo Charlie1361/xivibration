@@ -130,6 +130,12 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool OnlyInCombat { get; set; }
 
+    /// <summary>
+    /// Only my character's animations may vibrate. Mods apply to everyone's animations, so
+    /// built-in vibration in a mod would otherwise also fire when other players use the skill.
+    /// </summary>
+    public bool OnlyMyCharacter { get; set; } = true;
+
     /// <summary>When a new skill starts, cut pulses still playing from an earlier one.</summary>
     public bool CancelPreviousOnNewAction { get; set; }
 

@@ -41,6 +41,8 @@ public sealed unsafe class VibrationEngine : IDisposable
     private long lastSendMs;
     private long nextSettingCheckMs;
     private long suppressGameUntilMs;
+    private long localWindowUntilMs;
+    private bool lastRequestBlocked;
 
     public VibrationEngine(Configuration config)
     {
@@ -88,6 +90,12 @@ public sealed unsafe class VibrationEngine : IDisposable
         this.gameRight = 0;
         this.gameLeft = 0;
     }
+
+    /// <summary>The game's own vibration may play until then: one of my character's animations is running.</summary>
+    public void OpenLocalWindow(long untilMs) => this.localWindowUntilMs = Math.Max(this.localWindowUntilMs, untilMs);
+
+    /// <summary>How many times the game tried to vibrate for another character's animation.</summary>
+    public int BlockedFromOthers { get; private set; }
 
     public void StopAll()
     {
@@ -223,6 +231,19 @@ public sealed unsafe class VibrationEngine : IDisposable
                 // Replacing built-in vibration: drop what the game asked for.
                 rightMotor = 0;
                 leftMotor = 0;
+            }
+            else if (this.config.Enabled && this.config.OnlyMyCharacter && Clock.NowMs >= this.localWindowUntilMs && (rightMotor > 0 || leftMotor > 0))
+            {
+                // Vibration from someone else's animation (mods apply to everyone): not mine, drop it.
+                if (!this.lastRequestBlocked)
+                    this.BlockedFromOthers++;
+                this.lastRequestBlocked = true;
+                rightMotor = 0;
+                leftMotor = 0;
+            }
+            else
+            {
+                this.lastRequestBlocked = false;
             }
 
             this.gameRight = rightMotor;
