@@ -11,6 +11,7 @@ using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
+using XIVibration.Timeline;
 
 namespace XIVibration.Windows;
 
@@ -19,31 +20,40 @@ public sealed class MainWindow : Window, IDisposable
     private static readonly Vector4 Dim = new(0.62f, 0.62f, 0.62f, 1f);
     private static readonly Vector4 Good = new(0.45f, 0.85f, 0.45f, 1f);
     private static readonly Vector4 Bad = new(0.95f, 0.45f, 0.4f, 1f);
+    private static readonly Vector4 CustomColor = new(0.95f, 0.8f, 0.35f, 1f);
+    private static readonly Vector4 BuiltInColor = new(0.75f, 0.6f, 1f, 1f);
     private static readonly Vector4 StrongColor = new(0.95f, 0.55f, 0.25f, 1f);
     private static readonly Vector4 WeakColor = new(0.35f, 0.7f, 1f, 1f);
+    private static readonly Vector4 HitColor = new(1f, 1f, 1f, 0.55f);
+
+    private static readonly (SkillGroup Group, string Label, bool Open)[] Groups =
+    {
+        (SkillGroup.Weaponskill, "Weaponskills", true),
+        (SkillGroup.Spell, "Spells", true),
+        (SkillGroup.Ability, "Abilities", true),
+        (SkillGroup.Role, "Role actions", false),
+        (SkillGroup.LimitBreak, "Limit breaks", false),
+        (SkillGroup.Other, "Other", false),
+    };
 
     private readonly Plugin plugin;
     private readonly FileDialogManager fileDialog = new();
     private readonly Stopwatch clock = Stopwatch.StartNew();
 
     private uint? selectedId;
-    private bool fallbackSelected;
+    private uint? pinnedJob;
+    private string search = string.Empty;
 
-    private string addSearch = string.Empty;
-    private bool addCurrentJobOnly = true;
-    private bool addIncludePvP;
-    private List<ActionInfo>? addResults;
-    private string addResultsKey = string.Empty;
-
+    private bool showImport;
     private string importPath = string.Empty;
     private bool importAppend;
-    private bool showImport;
     private string? importMessage;
 
     private List<VibrationPulse>? clipboard;
     private long testStartMs = -1;
     private long testLengthMs;
 
+    private int loadBudget;
     private bool dirty;
     private long lastEditMs;
 
@@ -53,10 +63,10 @@ public sealed class MainWindow : Window, IDisposable
         this.plugin = plugin;
         this.SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(760, 480),
+            MinimumSize = new Vector2(780, 500),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
         };
-        this.Size = new Vector2(980, 640);
+        this.Size = new Vector2(1000, 680);
         this.SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -82,6 +92,9 @@ public sealed class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        // Reading animation files is spread over frames so opening a job doesn't stutter.
+        this.loadBudget = 6;
+
         this.DrawTopBar();
 
         using (var tabs = ImRaii.TabBar("##tabs"))
@@ -165,13 +178,12 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawSkillsTab()
     {
-        var scale = ImGuiHelpers.GlobalScale;
-        var listWidth = 290 * scale;
+        var listWidth = 320 * ImGuiHelpers.GlobalScale;
 
         using (var left = ImRaii.Child("##left", new Vector2(listWidth, 0), true))
         {
             if (left)
-                this.DrawRuleList();
+                this.DrawSkillList();
         }
 
         ImGui.SameLine();
@@ -183,92 +195,135 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
-    private void DrawRuleList()
+    private uint ShownJob => this.pinnedJob ?? ActionCatalog.CurrentJobId();
+
+    private void DrawJobSelector()
     {
-        var scale = ImGuiHelpers.GlobalScale;
+        var current = ActionCatalog.CurrentJobId();
+        var currentAbbr = this.plugin.Catalog.GetJob(current)?.Abbr ?? "-";
+        var label = this.pinnedJob is { } pj
+            ? JobLabel(this.plugin.Catalog.GetJob(pj))
+            : $"Current job ({currentAbbr})";
 
-        if (ImGui.Button("Add skill...", new Vector2(-1, 0)))
-        {
-            this.addResults = null;
-            ImGui.OpenPopup("##addskill");
-        }
-
-        this.DrawAddSkillPopup();
-
-        ImGui.Spacing();
-        if (ImGui.CollapsingHeader("Recently used", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            var recent = this.plugin.Watcher.Recent;
-            if (recent.Count == 0)
-            {
-                using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-                ImGui.TextWrapped("Use a skill in game and it shows up here. Click it to add vibration.");
-            }
-
-            foreach (var id in recent.Take(8).ToArray())
-            {
-                var has = this.Config.Rules.ContainsKey(id);
-                using var pid = ImRaii.PushId((int)id + 1_000_000);
-                if (this.ActionRow(id, !this.fallbackSelected && this.selectedId == id, has ? "(configured)" : "+ click to add"))
-                {
-                    if (!has)
-                        this.AddRule(id);
-                    this.Select(id);
-                }
-            }
-        }
-
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Skills with vibration");
-        ImGui.Separator();
-
-        // Fallback rule
-        {
-            var useFallback = this.Config.UseFallback;
-            if (ImGui.Checkbox("##fallbackOn", ref useFallback))
-            {
-                this.Config.UseFallback = useFallback;
-                this.MarkDirty();
-            }
-
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Turn the fallback pattern on or off");
-            ImGui.SameLine();
-            if (ImGui.Selectable("All other skills (fallback)", this.fallbackSelected))
-            {
-                this.fallbackSelected = true;
-                this.selectedId = null;
-            }
-        }
-
-        if (this.Config.Rules.Count == 0)
-        {
-            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextWrapped("No skills yet. Use \"Add skill...\" or click a recently used skill.");
+        ImGui.SetNextItemWidth(-1);
+        using var combo = ImRaii.Combo("##job", label, ImGuiComboFlags.HeightLarge);
+        if (!combo)
             return;
-        }
 
-        foreach (var rule in this.Config.Rules.Values.OrderBy(r => this.plugin.Catalog.NameOf(r.ActionId)).ToArray())
+        if (ImGui.Selectable($"Current job ({currentAbbr})", this.pinnedJob == null))
+            this.pinnedJob = null;
+        ImGui.Separator();
+        foreach (var job in this.plugin.Catalog.Jobs)
         {
-            using var pid = ImRaii.PushId((int)rule.ActionId);
-            var on = rule.Enabled;
-            if (ImGui.Checkbox("##on", ref on))
-            {
-                rule.Enabled = on;
-                this.MarkDirty();
-            }
-
-            ImGui.SameLine();
-            var info = this.plugin.Catalog.Get(rule.ActionId);
-            if (this.ActionRow(rule.ActionId, !this.fallbackSelected && this.selectedId == rule.ActionId, info?.JobAbbr ?? string.Empty, 22 * scale))
-                this.Select(rule.ActionId);
+            if (ImGui.Selectable(JobLabel(job), this.pinnedJob == job.Id))
+                this.pinnedJob = job.Id;
         }
     }
 
-    private bool ActionRow(uint id, bool selected, string suffix, float iconSize = 0)
+    private static string JobLabel(JobInfo? job) => job == null ? "-" : $"{job.Abbr}  {job.Name}";
+
+    private void DrawSkillList()
     {
-        if (iconSize <= 0)
-            iconSize = 24 * ImGuiHelpers.GlobalScale;
+        this.DrawJobSelector();
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("##search", "Search skills...", ref this.search, 64);
+
+        var recent = this.plugin.Watcher.Recent;
+        if (recent.Count > 0 && ImGui.CollapsingHeader($"Recently used##recent", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            foreach (var id in recent.Take(5).ToArray())
+            {
+                using var pid = ImRaii.PushId((int)id + 1_000_000);
+                this.SkillRow(id);
+            }
+        }
+
+        var job = this.ShownJob;
+        var skills = this.plugin.Catalog.ForJob(job);
+        if (skills.Count == 0)
+        {
+            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
+            ImGui.TextWrapped(job == 0 ? "Log in to see your job's skills, or pick a job above." : "No skills found for this job.");
+            return;
+        }
+
+        var term = this.search.Trim();
+        foreach (var (group, label, open) in Groups)
+        {
+            var items = skills.Where(a => a.Group == group && ActionCatalog.MatchesSearch(a, term)).ToList();
+            if (items.Count == 0)
+                continue;
+
+            var flags = open || term.Length > 0 ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+            if (!ImGui.CollapsingHeader($"{label} ({items.Count})##{group}", flags))
+                continue;
+
+            foreach (var a in items)
+            {
+                using var pid = ImRaii.PushId((int)a.Id);
+                this.SkillRow(a.Id);
+            }
+        }
+    }
+
+    /// <summary>One line in the list: on/off box, icon, name, badge.</summary>
+    private void SkillRow(uint id)
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var cached = this.plugin.Timelines.IsCached(id);
+        SkillPlan? plan = null;
+        if (cached || this.loadBudget-- > 0)
+            plan = this.plugin.PlanFor(id);
+
+        var on = plan?.Mode is SkillMode.Auto or SkillMode.Custom or SkillMode.BuiltIn;
+        if (ImGui.Checkbox("##on", ref on))
+            this.SetSkillOn(id, on);
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(plan?.Mode == SkillMode.BuiltIn
+                ? "This animation vibrates on its own, and that is kept.\nThis switch only controls the plugin's pattern (used when \"Replace built-in vibration\" is on)."
+                : on ? "Vibrates. Click to switch off." : "Off. Click to switch on.");
+        }
+
+        ImGui.SameLine();
+        var (badge, color) = plan?.Mode switch
+        {
+            SkillMode.Custom => ("Custom", CustomColor),
+            SkillMode.Auto => (plan.Pulses.Count > 1 ? $"Auto x{plan.Pulses.Count}" : "Auto", Good),
+            SkillMode.BuiltIn => ("Built-in", BuiltInColor),
+            SkillMode.Off => ("Off", Dim),
+            _ => ("...", Dim),
+        };
+
+        if (this.ActionRow(id, this.selectedId == id, badge, color, 22 * scale))
+            this.Select(id);
+    }
+
+    private void SetSkillOn(uint id, bool on)
+    {
+        if (this.Config.Rules.TryGetValue(id, out var rule))
+        {
+            rule.Enabled = on;
+        }
+        else
+        {
+            if (on)
+            {
+                this.Config.AutoDisabled.Remove(id);
+                if (!this.Config.AutoEnabled)
+                    this.Config.AutoEnabled = true;
+            }
+            else
+            {
+                this.Config.AutoDisabled.Add(id);
+            }
+        }
+
+        this.MarkDirty();
+    }
+
+    private bool ActionRow(uint id, bool selected, string badge, Vector4 badgeColor, float iconSize)
+    {
         var info = this.plugin.Catalog.Get(id);
         var start = ImGui.GetCursorPos();
         var clicked = ImGui.Selectable("##row", selected, ImGuiSelectableFlags.None, new Vector2(0, iconSize));
@@ -277,11 +332,11 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.SetCursorPosY(start.Y + (iconSize - ImGui.GetTextLineHeight()) / 2f);
         ImGui.TextUnformatted(this.plugin.Catalog.NameOf(id));
-        if (suffix.Length > 0)
+        if (badge.Length > 0)
         {
             ImGui.SameLine();
-            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextUnformatted(suffix);
+            using var c = ImRaii.PushColor(ImGuiCol.Text, badgeColor);
+            ImGui.TextUnformatted(badge);
         }
 
         ImGui.SetCursorPos(start + new Vector2(0, iconSize + ImGui.GetStyle().ItemSpacing.Y));
@@ -301,70 +356,9 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Image(wrap.Handle, new Vector2(size));
     }
 
-    private void DrawAddSkillPopup()
-    {
-        var scale = ImGuiHelpers.GlobalScale;
-        ImGui.SetNextWindowSize(new Vector2(420, 460) * scale);
-        using var popup = ImRaii.Popup("##addskill");
-        if (!popup)
-            return;
-
-        if (ImGui.IsWindowAppearing())
-            ImGui.SetKeyboardFocusHere();
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##search", "Search by name, job (DRG) or ID...", ref this.addSearch, 64);
-        ImGui.Checkbox("Current job only", ref this.addCurrentJobOnly);
-        ImGui.SameLine();
-        ImGui.Checkbox("Include PvP", ref this.addIncludePvP);
-
-        var job = ActionCatalog.CurrentJob();
-        var key = $"{this.addSearch}|{this.addCurrentJobOnly}|{this.addIncludePvP}|{job.Job}";
-        if (this.addResults == null || key != this.addResultsKey)
-        {
-            this.addResultsKey = key;
-            this.addResults = this.plugin.Catalog.PlayerActions
-                .Where(a => (this.addIncludePvP || !a.IsPvP)
-                            && (!this.addCurrentJobOnly || ActionCatalog.MatchesJob(a, job))
-                            && ActionCatalog.MatchesSearch(a, this.addSearch.Trim()))
-                .Take(300)
-                .ToList();
-        }
-
-        ImGui.Separator();
-        using var list = ImRaii.Child("##results", Vector2.Zero);
-        if (!list)
-            return;
-
-        if (this.addResults.Count == 0)
-        {
-            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextUnformatted("No matching skills.");
-        }
-
-        foreach (var a in this.addResults)
-        {
-            using var pid = ImRaii.PushId((int)a.Id);
-            var suffix = $"{a.JobAbbr} Lv{a.Level}" + (a.IsPvP ? " PvP" : string.Empty) + (this.Config.Rules.ContainsKey(a.Id) ? "  (added)" : string.Empty);
-            if (this.ActionRow(a.Id, false, suffix))
-            {
-                if (!this.Config.Rules.ContainsKey(a.Id))
-                    this.AddRule(a.Id);
-                this.Select(a.Id);
-                ImGui.CloseCurrentPopup();
-            }
-        }
-    }
-
-    private void AddRule(uint id)
-    {
-        this.Config.Rules[id] = new ActionRule { ActionId = id, Pulses = Presets.Copy(Presets.All[1]) };
-        this.MarkDirty();
-    }
-
     private void Select(uint id)
     {
         this.selectedId = id;
-        this.fallbackSelected = false;
         this.importMessage = null;
     }
 
@@ -372,62 +366,143 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawEditor()
     {
-        ActionRule? rule = null;
-        if (this.fallbackSelected)
-            rule = this.Config.Fallback;
-        else if (this.selectedId is { } id && this.Config.Rules.TryGetValue(id, out var r))
-            rule = r;
-
-        if (rule == null)
+        if (this.selectedId is not { } id)
         {
             using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextWrapped("Pick a skill on the left, or add one, to design its vibration.");
+            ImGui.TextWrapped("Every skill vibrates on its hits automatically. Pick a skill on the left to see its pattern, test it, or make your own.");
             return;
         }
 
         var scale = ImGuiHelpers.GlobalScale;
+        var plan = this.plugin.PlanFor(id);
+        var info = this.plugin.Catalog.Get(id);
 
         // Header
-        if (this.fallbackSelected)
+        DrawIcon(info?.Icon ?? 0, 40 * scale);
+        ImGui.SameLine();
+        using (ImRaii.Group())
         {
-            ImGui.TextUnformatted("All other skills (fallback)");
+            ImGui.TextUnformatted(this.plugin.Catalog.NameOf(id));
             using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextWrapped("Plays for every skill you use that has no rule of its own. Turn it on with the checkbox in the list.");
+            ImGui.TextUnformatted($"{info?.JobAbbr} Lv{info?.Level}  ·  {info?.Group}  ·  ID {id}");
+            this.DrawTimelineInfo(plan);
         }
+
+        ImGui.Spacing();
+        if (plan.Rule != null)
+            this.DrawCustomEditor(plan, plan.Rule);
         else
+            this.DrawAutoEditor(plan);
+    }
+
+    private void DrawTimelineInfo(SkillPlan plan)
+    {
+        var tl = plan.Timeline;
+        var hits = plan.Auto.HitMs.Count == 0
+            ? "-"
+            : string.Join(", ", plan.Auto.HitMs.Select(ms => $"{ms / 1000f:0.00}s"));
+        var source = plan.Auto.Source switch
         {
-            var info = this.plugin.Catalog.Get(rule.ActionId);
-            DrawIcon(info?.Icon ?? 0, 40 * scale);
-            ImGui.SameLine();
-            using (ImRaii.Group())
-            {
-                ImGui.TextUnformatted(this.plugin.Catalog.NameOf(rule.ActionId));
-                using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-                ImGui.TextUnformatted($"{info?.JobAbbr} Lv{info?.Level}  ·  ID {rule.ActionId}");
-                if (!string.IsNullOrEmpty(info?.Timeline))
-                {
-                    ImGui.TextUnformatted(info.Timeline);
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip("Animation timeline (.tmb) of this skill. Click to use it as the import path.");
-                    if (ImGui.IsItemClicked())
-                    {
-                        this.importPath = info.Timeline;
-                        this.showImport = true;
-                    }
-                }
-            }
+            AutoSource.MultiHit => "MultiHit hit table",
+            AutoSource.BuiltInFrames => "the animation's vibration frames",
+            AutoSource.Animation => "animation hit frame",
+            _ => "default (no animation data)",
+        };
+        ImGui.TextUnformatted($"Hits at {hits}  ({source})");
 
-            var enabled = rule.Enabled;
-            if (ImGui.Checkbox("Enabled##rule", ref enabled))
+        if (tl.GamePath.Length > 0)
+        {
+            ImGui.TextUnformatted(tl.FromMod ? $"{tl.GamePath}  (mod)" : tl.GamePath);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip((tl.ResolvedPath ?? tl.GamePath) + (tl.Error != null ? $"\n{tl.Error}" : string.Empty) + "\nClick to use it as the import path.");
+            if (ImGui.IsItemClicked())
             {
-                rule.Enabled = enabled;
-                this.MarkDirty();
+                this.importPath = tl.ResolvedPath ?? tl.GamePath;
+                this.showImport = plan.Rule != null;
             }
+        }
+        else if (tl.Error != null)
+        {
+            ImGui.TextUnformatted(tl.Error);
+        }
+    }
 
-            ImGui.SameLine();
+    private void DrawAutoEditor(SkillPlan plan)
+    {
+        var id = plan.ActionId;
+        var on = !this.Config.AutoDisabled.Contains(id);
+        if (ImGui.Checkbox("Vibrate this skill", ref on))
+            this.SetSkillOn(id, on);
+
+        ImGui.SameLine();
+        var builtIn = plan.Mode == SkillMode.BuiltIn || (plan.Mode == SkillMode.Off && plan.Auto.KeptBuiltIn);
+        var preview = builtIn ? plan.Auto.BuiltInPreview : plan.Pulses;
+        using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
+        {
+            if (ImGui.Button("  Test  "))
+                this.Test(preview, builtIn ? 1f : plan.Scale);
         }
 
-        ImGui.SetNextItemWidth(160 * scale);
+        if (builtIn && ImGui.IsItemHovered())
+            ImGui.SetTooltip("Plays an approximation of the animation's own vibration.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Customize"))
+        {
+            this.Config.Rules[id] = new ActionRule
+            {
+                ActionId = id,
+                Anchor = PulseAnchor.AnimationStart,
+                Strength = builtIn ? 1f : plan.Scale,
+                Pulses = Configuration.ClonePulses(preview.Count > 0 ? preview : plan.Auto.Pulses),
+            };
+            this.Config.AutoDisabled.Remove(id);
+            this.MarkDirty();
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Make your own pattern for this skill, starting from this one.");
+
+        ImGui.Spacing();
+        using (ImRaii.PushColor(ImGuiCol.Text, builtIn ? BuiltInColor : Dim))
+        {
+            if (builtIn)
+            {
+                ImGui.TextWrapped("This skill's animation already has its own vibration (from a mod or the game). " +
+                                  "It is kept as it is and the plugin adds nothing. To use the plugin's pattern instead, turn on " +
+                                  "\"Replace built-in vibration\" in Settings, or click Customize.");
+            }
+            else
+            {
+                ImGui.TextWrapped("Automatic: one pulse on every hit. Strength follows the skill type and how much of the damage each hit does. " +
+                                  "Adjust the type strengths in Settings.");
+            }
+        }
+
+        ImGui.Spacing();
+        this.DrawTimeline(preview, builtIn ? 1f : plan.Scale, plan.Auto.HitMs);
+
+        if (preview.Count > 0)
+        {
+            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
+            foreach (var p in preview)
+                ImGui.TextUnformatted($"  {p.DelayMs,5} ms   {p.DurationMs,4} ms   strong {p.Strong,3}%   weak {p.Weak,3}%   {ShapeName(p.Shape)}");
+        }
+    }
+
+    private void DrawCustomEditor(SkillPlan plan, ActionRule rule)
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+
+        var enabled = rule.Enabled;
+        if (ImGui.Checkbox("Enabled##rule", ref enabled))
+        {
+            rule.Enabled = enabled;
+            this.MarkDirty();
+        }
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(140 * scale);
         var strength = rule.Strength * 100f;
         if (ImGui.SliderFloat("Strength##rule", ref strength, 0f, 200f, "%.0f%%"))
         {
@@ -439,42 +514,65 @@ public sealed class MainWindow : Window, IDisposable
         using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
         {
             if (ImGui.Button("  Test  "))
-                this.Test(rule);
+                this.Test(plan.Pulses, rule.Strength);
         }
 
-        if (!this.fallbackSelected)
+        ImGui.SameLine();
+        var ctrl = ImGui.GetIO().KeyCtrl;
+        using (ImRaii.Disabled(!ctrl))
         {
-            ImGui.SameLine();
-            var ctrl = ImGui.GetIO().KeyCtrl;
-            using (ImRaii.Disabled(!ctrl))
+            if (ImGui.Button("Reset to auto"))
             {
-                if (ImGui.Button("Remove"))
-                {
-                    this.Config.Rules.Remove(rule.ActionId);
-                    this.selectedId = null;
-                    this.MarkDirty();
-                    return;
-                }
+                this.Config.Rules.Remove(rule.ActionId);
+                this.MarkDirty();
+                return;
             }
-
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Hold Ctrl and click to remove this skill.");
         }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Hold Ctrl and click to delete your pattern and go back to automatic.");
+
+        // Anchor
+        ImGui.SetNextItemWidth(200 * scale);
+        var firstHit = (int)MathF.Round(plan.Timeline.FirstHitMs);
+        using (var combo = ImRaii.Combo("Delays count from", rule.Anchor == PulseAnchor.FirstHit ? "the first hit" : "the animation start"))
+        {
+            if (combo)
+            {
+                if (ImGui.Selectable("the first hit", rule.Anchor == PulseAnchor.FirstHit) && rule.Anchor != PulseAnchor.FirstHit)
+                    this.SetAnchor(rule, PulseAnchor.FirstHit, firstHit);
+                if (ImGui.Selectable("the animation start", rule.Anchor == PulseAnchor.AnimationStart) && rule.Anchor != PulseAnchor.AnimationStart)
+                    this.SetAnchor(rule, PulseAnchor.AnimationStart, firstHit);
+            }
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip($"First hit of this skill is at {firstHit} ms. Counting from it keeps presets on the hit.");
 
         ImGui.Spacing();
         this.DrawPatternTools(rule);
         ImGui.Spacing();
-        this.DrawTimeline(rule);
+        this.DrawTimeline(plan.Pulses, rule.Strength, plan.Auto.HitMs);
         ImGui.Spacing();
         this.DrawPulseTable(rule);
     }
 
-    private void Test(ActionRule rule)
+    /// <summary>Switch anchor and shift delays so the pattern stays where it was.</summary>
+    private void SetAnchor(ActionRule rule, PulseAnchor anchor, int firstHitMs)
+    {
+        var shift = anchor == PulseAnchor.FirstHit ? -firstHitMs : firstHitMs;
+        foreach (var p in rule.Pulses)
+            p.DelayMs = Math.Max(0, p.DelayMs + shift);
+        rule.Anchor = anchor;
+        this.MarkDirty();
+    }
+
+    private void Test(IReadOnlyList<VibrationPulse> pulses, float strength)
     {
         this.plugin.Engine.StopAll();
-        this.plugin.Engine.Play(rule.Pulses, rule.Strength * this.Config.MasterStrength, ignoreGates: true);
+        this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true);
         this.testStartMs = this.clock.ElapsedMilliseconds;
-        this.testLengthMs = rule.Pulses.Count == 0 ? 0 : rule.Pulses.Max(p => p.DelayMs + p.DurationMs);
+        this.testLengthMs = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
     }
 
     private void DrawPatternTools(ActionRule rule)
@@ -491,24 +589,25 @@ public sealed class MainWindow : Window, IDisposable
                     if (ImGui.Selectable(p.Name))
                     {
                         rule.Pulses = Presets.Copy(p);
+                        rule.Anchor = PulseAnchor.FirstHit;
                         this.MarkDirty();
                     }
 
                     if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip(p.Description);
+                        ImGui.SetTooltip(p.Description + "\nStarts on the skill's first hit.");
                 }
             }
         }
 
         ImGui.SameLine();
         if (ImGui.Button("Copy"))
-            this.clipboard = rule.Pulses.Select(p => p.Clone()).ToList();
+            this.clipboard = Configuration.ClonePulses(rule.Pulses);
         ImGui.SameLine();
         using (ImRaii.Disabled(this.clipboard == null))
         {
             if (ImGui.Button("Paste") && this.clipboard != null)
             {
-                rule.Pulses = this.clipboard.Select(p => p.Clone()).ToList();
+                rule.Pulses = Configuration.ClonePulses(this.clipboard);
                 this.MarkDirty();
             }
         }
@@ -528,9 +627,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         var scale = ImGuiHelpers.GlobalScale;
         ImGui.Separator();
-
-        ImGui.TextWrapped("Reads the C120 \"Controller Vibration\" entries from an animation timeline and turns them into pulses. " +
-                          "Use a file from a mod folder (for example the Classic DRG mod) or a game path like chara/action/ws/bt_2sp_emp/ws_s20.tmb.");
+        ImGui.TextWrapped("Turns the vibration entries (C120) of an animation timeline into pulses. " +
+                          "Use a .tmb file on disk or a game path like chara/action/ws/bt_2sp_emp/ws_s20.tmb.");
         ImGui.Spacing();
         ImGui.SetNextItemWidth(-90 * scale);
         ImGui.InputTextWithHint("##importpath", "File on disk or game path", ref this.importPath, 512);
@@ -553,11 +651,13 @@ public sealed class MainWindow : Window, IDisposable
                 var entries = TmbImport.ReadC120(TmbImport.Load(this.importPath));
                 if (entries.Count == 0)
                 {
-                    this.importMessage = "No C120 entries in this file. This animation has no vibration of its own.";
+                    this.importMessage = "No vibration entries in this file.";
                 }
                 else
                 {
                     var pulses = TmbImport.ToPulses(entries);
+                    if (rule.Anchor == PulseAnchor.FirstHit && !this.importAppend)
+                        rule.Anchor = PulseAnchor.AnimationStart; // C120 times count from the animation start
                     if (this.importAppend)
                         rule.Pulses.AddRange(pulses);
                     else
@@ -583,31 +683,33 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Separator();
     }
 
-    private void DrawTimeline(ActionRule rule)
+    /// <summary>Two motor lanes over time, with the skill's hit frames as white ticks.</summary>
+    private void DrawTimeline(IReadOnlyList<VibrationPulse> pulses, float strength, IReadOnlyList<float> hitMs)
     {
         var scale = ImGuiHelpers.GlobalScale;
         var dl = ImGui.GetWindowDrawList();
         var width = ImGui.GetContentRegionAvail().X;
         var laneH = 34 * scale;
         var labelH = ImGui.GetTextLineHeight();
-        var height = laneH * 2 + 6 * scale + labelH;
+        var graphH = laneH * 2 + 6 * scale;
         var origin = ImGui.GetCursorScreenPos();
 
-        var total = rule.Pulses.Count == 0 ? 0 : rule.Pulses.Max(p => p.DelayMs + p.DurationMs);
+        var total = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
+        if (hitMs.Count > 0)
+            total = Math.Max(total, (int)hitMs.Max() + 100);
         var span = Math.Max(500, (int)(Math.Ceiling(total / 250.0) * 250));
         float X(float ms) => origin.X + width * ms / span;
 
-        dl.AddRectFilled(origin, origin + new Vector2(width, laneH * 2 + 6 * scale), ImGui.GetColorU32(ImGuiCol.FrameBg), 4f);
+        dl.AddRectFilled(origin, origin + new Vector2(width, graphH), ImGui.GetColorU32(ImGuiCol.FrameBg), 4f);
 
-        // grid every 100 ms, labels every 500 ms
         var gridCol = ImGui.GetColorU32(new Vector4(1, 1, 1, 0.07f));
         var labelCol = ImGui.GetColorU32(Dim);
         for (var ms = 0; ms <= span; ms += 100)
         {
             var x = X(ms);
-            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + laneH * 2 + 6 * scale), gridCol);
+            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + graphH), gridCol);
             if (ms % 500 == 0)
-                dl.AddText(new Vector2(x + 2, origin.Y + laneH * 2 + 6 * scale), labelCol, $"{ms / 1000f:0.0}s");
+                dl.AddText(new Vector2(x + 2, origin.Y + graphH), labelCol, $"{ms / 1000f:0.0}s");
         }
 
         var strongTop = origin.Y;
@@ -616,7 +718,7 @@ public sealed class MainWindow : Window, IDisposable
         var weakCol = ImGui.GetColorU32(WeakColor);
         var step = Math.Max(1f, 2f * scale);
 
-        foreach (var p in rule.Pulses)
+        foreach (var p in pulses)
         {
             if (p.DurationMs <= 0)
                 continue;
@@ -625,7 +727,7 @@ public sealed class MainWindow : Window, IDisposable
             for (var x = x0; x < x1; x += step)
             {
                 var t = (x - x0) / Math.Max(1f, x1 - x0) * p.DurationMs;
-                var env = VibrationEngine.Envelope(p.Shape, t, p.DurationMs) * rule.Strength;
+                var env = VibrationEngine.Envelope(p.Shape, t, p.DurationMs) * strength;
                 var hs = Math.Clamp(p.Strong * env / 100f, 0f, 1f) * laneH;
                 var hw = Math.Clamp(p.Weak * env / 100f, 0f, 1f) * laneH;
                 var xe = Math.Min(x + step, x1);
@@ -636,17 +738,24 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
+        var hitCol = ImGui.GetColorU32(HitColor);
+        foreach (var ms in hitMs)
+        {
+            var x = X(ms);
+            dl.AddLine(new Vector2(x, origin.Y - 2 * scale), new Vector2(x, origin.Y + graphH), hitCol, 1.5f * scale);
+            dl.AddTriangleFilled(new Vector2(x - 4 * scale, origin.Y - 6 * scale), new Vector2(x + 4 * scale, origin.Y - 6 * scale), new Vector2(x, origin.Y), hitCol);
+        }
+
         dl.AddText(new Vector2(origin.X + 4, strongTop + 2), ImGui.GetColorU32(ImGuiCol.Text), "Strong");
         dl.AddText(new Vector2(origin.X + 4, weakTop + 2), ImGui.GetColorU32(ImGuiCol.Text), "Weak");
 
-        // playhead while testing
         if (this.testStartMs >= 0)
         {
             var elapsed = this.clock.ElapsedMilliseconds - this.testStartMs;
             if (elapsed <= Math.Max(this.testLengthMs, 1))
             {
                 var x = X(elapsed);
-                dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + laneH * 2 + 6 * scale), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.9f)), 2f);
+                dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + graphH), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.9f)), 2f);
             }
             else
             {
@@ -654,7 +763,12 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
-        ImGui.Dummy(new Vector2(width, height + 2 * scale));
+        ImGui.Dummy(new Vector2(width, graphH + labelH + 2 * scale));
+        if (hitMs.Count > 0)
+        {
+            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
+            ImGui.TextUnformatted("White marks = hits.");
+        }
     }
 
     private void DrawPulseTable(ActionRule rule)
@@ -683,7 +797,7 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextUnformatted("Strong = left, heavy motor. Weak = right, light buzz. Delay counts from when the skill goes off.");
+            ImGui.TextUnformatted("Strong = left, heavy motor. Weak = right, light buzz.");
 
         if (rule.Pulses.Count == 0)
         {
@@ -831,26 +945,45 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawSettingsTab()
     {
-        var respect = this.Config.RespectGameSetting;
-        if (ImGui.Checkbox("Follow the game's \"Enable vibration\" setting", ref respect))
+        var scale = ImGuiHelpers.GlobalScale;
+
+        this.Check("Follow the game's \"Enable vibration\" setting", this.Config.RespectGameSetting, v => this.Config.RespectGameSetting = v);
+        this.Check("Only vibrate in combat", this.Config.OnlyInCombat, v => this.Config.OnlyInCombat = v);
+        this.Check("A new skill cuts off the previous skill's vibration", this.Config.CancelPreviousOnNewAction, v => this.Config.CancelPreviousOnNewAction = v);
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Automatic vibration");
+        ImGui.Separator();
+        this.Check("Vibrate every skill automatically, on its hits", this.Config.AutoEnabled, v => this.Config.AutoEnabled = v);
+
+        this.Check("Use hit timings from the MultiHit plugin", this.Config.UseMultiHit, v => this.Config.UseMultiHit = v);
+        ImGui.SameLine();
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
         {
-            this.Config.RespectGameSetting = respect;
-            this.MarkDirty();
+            var mh = this.plugin.MultiHit;
+            mh.Refresh();
+            ImGui.TextUnformatted(mh.Available ? $"({mh.Count} skills found)" : "(MultiHit not installed)");
         }
 
-        var combat = this.Config.OnlyInCombat;
-        if (ImGui.Checkbox("Only vibrate in combat", ref combat))
+        this.Check("Replace built-in vibration from other mods", this.Config.ReplaceModVibration, v => this.Config.ReplaceModVibration = v);
+        if (ImGui.IsItemHovered())
         {
-            this.Config.OnlyInCombat = combat;
-            this.MarkDirty();
+            ImGui.SetTooltip("Off (default): skills whose animation already vibrates keep that vibration, and the plugin adds nothing.\n" +
+                             "On: the plugin mutes that vibration while the skill plays and uses its own pattern, keeping the same hit timing.");
         }
 
-        var cancel = this.Config.CancelPreviousOnNewAction;
-        if (ImGui.Checkbox("A new skill cuts off the previous skill's vibration", ref cancel))
-        {
-            this.Config.CancelPreviousOnNewAction = cancel;
-            this.MarkDirty();
-        }
+        ImGui.TextUnformatted("Strength by skill type");
+        var s = this.Config.AutoStrength;
+        this.Strength("Weaponskills", s.Weaponskill, v => s.Weaponskill = v, scale);
+        this.Strength("Spells", s.Spell, v => s.Spell = v, scale);
+        this.Strength("Abilities", s.Ability, v => s.Ability = v, scale);
+        this.Strength("Buffs, heals, movement", s.Support, v => s.Support = v, scale);
+        this.Strength("Limit breaks", s.LimitBreak, v => s.LimitBreak = v, scale);
+
+        if (ImGui.Button("Re-scan animations"))
+            this.plugin.Timelines.Clear();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Read the skills' animation files again, for example after changing mods. Also happens on every zone change.");
 
         ImGui.Spacing();
         ImGui.TextUnformatted("Motor test");
@@ -871,15 +1004,63 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("Status");
         ImGui.Separator();
         var e = this.plugin.Engine;
-        StatusLine("Gamepad device (InputDeviceManager > PadDevice)", e.PadFound, e.PadFound ? "found" : "not found");
-        StatusLine("Vibration hook (PadDeviceInterface::SetVibration)", e.HookActive, e.HookActive ? "active" : e.LastError ?? "not active, calling it directly");
-        StatusLine("Action hook (ActionEffectHandler::Receive)", this.plugin.Watcher.HookActive, this.plugin.Watcher.HookActive ? "active" : this.plugin.Watcher.LastError ?? "failed");
+        StatusLine("Gamepad device", e.PadFound, e.PadFound ? "found" : "not found");
+        StatusLine("Vibration hook", e.HookActive, e.HookActive ? "active" : e.LastError ?? "not active, calling it directly");
+        StatusLine("Skill hook", this.plugin.Watcher.HookActive, this.plugin.Watcher.HookActive ? "active" : this.plugin.Watcher.LastError ?? "failed");
         var gv = e.GameVibrationEnabled;
         StatusLine("Game option: Enable vibration", gv != false, gv == null ? "could not read" : gv.Value ? "on" : "off");
+        var pen = this.plugin.Timelines.PenumbraConnected;
+        StatusLine("Penumbra (reads modded animations)", pen != false, pen == null ? "not checked yet" : pen.Value ? "connected" : "not found, using unmodded animations");
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Last skill");
+        ImGui.Separator();
+        this.DrawLastSkill();
 
         ImGui.Spacing();
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
             ImGui.TextWrapped("Commands: /xivib (open), /xivib on | off | toggle | test | stop");
+    }
+
+    private void DrawLastSkill()
+    {
+        var plan = this.plugin.LastPlan;
+        using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
+        if (plan == null)
+        {
+            ImGui.TextUnformatted("Use a skill to see what was played for it.");
+            return;
+        }
+
+        var tl = plan.Timeline;
+        ImGui.TextUnformatted($"{this.plugin.Catalog.NameOf(plan.ActionId)} (ID {plan.ActionId}) at {this.plugin.LastPlanTime:HH:mm:ss}");
+        ImGui.TextUnformatted($"Mode: {plan.Mode}" + (plan.Mode == SkillMode.BuiltIn ? "  (built-in kept, 0 plugin pulses)" : $"  ({plan.Pulses.Count} pulse(s))"));
+        ImGui.TextUnformatted($"Timeline #{tl.TimelineId}: {tl.ResolvedPath ?? tl.GamePath}" + (tl.FromMod ? "  (mod)" : string.Empty));
+        ImGui.TextUnformatted($"Hit frames: {(tl.HitFrames.Count == 0 ? "-" : string.Join(", ", tl.HitFrames))}   Built-in vibration entries: {tl.C120.Count}   Source: {plan.Auto.Source}");
+        if (plan.Pulses.Count > 0)
+            ImGui.TextUnformatted("Pulses at: " + string.Join(", ", plan.Pulses.Select(p => $"{p.DelayMs} ms")));
+        if (tl.Error != null)
+            ImGui.TextUnformatted("Note: " + tl.Error);
+    }
+
+    private void Check(string label, bool value, Action<bool> set)
+    {
+        if (ImGui.Checkbox(label, ref value))
+        {
+            set(value);
+            this.MarkDirty();
+        }
+    }
+
+    private void Strength(string label, float value, Action<float> set, float scale)
+    {
+        ImGui.SetNextItemWidth(200 * scale);
+        var v = value * 100f;
+        if (ImGui.SliderFloat($"{label}##auto", ref v, 0f, 200f, "%.0f%%"))
+        {
+            set(v / 100f);
+            this.MarkDirty();
+        }
     }
 
     private static void StatusLine(string label, bool ok, string state)
@@ -897,20 +1078,22 @@ public sealed class MainWindow : Window, IDisposable
 
     private static void DrawHelpTab()
     {
-        ImGui.TextWrapped("Where the Classic DRG mod's vibration comes from");
+        ImGui.TextWrapped("How it works");
         ImGui.Separator();
         ImGui.TextWrapped(
-            "Every skill animation has a timeline file (.tmb). Timelines hold entries such as C012 (spawn a VFX), C063 (play a sound) and " +
-            "C120, \"Controller Vibration\". When the game plays a C120 entry it rumbles the pad. The Classic DRG mod adds C120 entries to its " +
-            "skills' .tmb files (33 of them). The Classic Paladin mod has C120 only in the tank limit break, which already vibrates in the " +
-            "unmodded game. That is why DRG vibrates and PLD does not. Screen shake (the CameraQuake effector in .avfx files) is " +
-            "in both mods, so it is not the cause.");
+            "When you use a skill, the plugin reads that skill's animation timeline (.tmb). Through Penumbra it reads the modded one if " +
+            "you have a mod for it. The timeline marks the frame where the hit lands, and the plugin vibrates the controller on that frame. " +
+            "If the MultiHit plugin has a hit table for the skill, every hit in it gets its own pulse, stronger for the hits that do more damage.");
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "This plugin skips the files. It watches for your skills and calls the same function the game uses (PadDevice::SetVibration). " +
-            "So any skill can vibrate, with or without mods, and on any controller the game supports. Use \"Import from .tmb...\" to copy " +
-            "the exact timing of a mod's C120 entries onto any skill.");
+            "The vibration goes through the game's own controller function, so it works with every controller the game supports and " +
+            "follows the game's vibration setting.");
         ImGui.Spacing();
-        ImGui.TextWrapped("C120 entry: id, start time (frames at 30 fps), duration (frames), unknown (0), wave type (1 heavy, 3 medium, 2 light; a guess based on how the mod uses them).");
+        ImGui.TextWrapped(
+            "Some animations already vibrate on their own. Those are left alone unless you turn on \"Replace built-in vibration\" in Settings.");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Every skill of every job vibrates out of the box. In the Skills tab you can switch single skills off, test them, " +
+            "or click Customize to design your own pattern.");
     }
 }

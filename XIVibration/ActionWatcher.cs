@@ -24,7 +24,8 @@ public sealed unsafe class ActionWatcher : IDisposable
 
     private readonly Hook<ReceiveDelegate>? hook;
 
-    public event Action<uint>? LocalActionUsed;
+    /// <summary>Action id, and the action timeline the character actually started (0 if unknown).</summary>
+    public event Action<uint, uint>? LocalActionUsed;
 
     public ActionWatcher()
     {
@@ -77,11 +78,30 @@ public sealed unsafe class ActionWatcher : IDisposable
             if (this.Recent.Count > 20)
                 this.Recent.RemoveAt(this.Recent.Count - 1);
 
-            this.LocalActionUsed?.Invoke(actionId);
+            this.LocalActionUsed?.Invoke(actionId, PlayedTimeline(casterPtr, actionId));
         }
         catch (Exception ex)
         {
             Plugin.Log.Error(ex, "Error in action effect handler");
+        }
+    }
+
+    /// <summary>Reads the timeline the game just started on the caster, in the slot the action's animation uses.</summary>
+    private static uint PlayedTimeline(Character* caster, uint actionId)
+    {
+        try
+        {
+            if (caster == null)
+                return 0;
+            var actions = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>();
+            if (!actions.TryGetRow(actionId, out var action) || !action.AnimationEnd.IsValid)
+                return 0;
+            var slot = action.AnimationEnd.Value.Slot;
+            return caster->Timeline.TimelineSequencer.GetSlotTimeline(slot);
+        }
+        catch
+        {
+            return 0;
         }
     }
 

@@ -14,10 +14,19 @@ public enum PulseShape
     Throb,
 }
 
+/// <summary>What a custom rule's pulse delays count from.</summary>
+public enum PulseAnchor
+{
+    /// <summary>From the moment the skill goes off (animation start).</summary>
+    AnimationStart,
+
+    /// <summary>From the skill's first hit frame in its animation.</summary>
+    FirstHit,
+}
+
 [Serializable]
 public sealed class VibrationPulse
 {
-    /// <summary>Time after the action fires before this pulse starts.</summary>
     public int DelayMs { get; set; }
 
     public int DurationMs { get; set; } = 200;
@@ -43,21 +52,31 @@ public sealed class ActionRule
     /// <summary>Multiplier for this rule only, on top of the master strength.</summary>
     public float Strength { get; set; } = 1f;
 
-    public List<VibrationPulse> Pulses { get; set; } = new();
+    public PulseAnchor Anchor { get; set; } = PulseAnchor.FirstHit;
 
-    public ActionRule Clone() => new()
-    {
-        ActionId = ActionId,
-        Enabled = Enabled,
-        Strength = Strength,
-        Pulses = Pulses.Select(p => p.Clone()).ToList(),
-    };
+    public List<VibrationPulse> Pulses { get; set; } = new();
+}
+
+[Serializable]
+public sealed class AutoStrengths
+{
+    public float Weaponskill { get; set; } = 1f;
+
+    public float Spell { get; set; } = 1f;
+
+    public float Ability { get; set; } = 1f;
+
+    public float Support { get; set; } = 1f;
+
+    public float LimitBreak { get; set; } = 1f;
 }
 
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public const int CurrentVersion = 2;
+
+    public int Version { get; set; } = CurrentVersion;
 
     public bool Enabled { get; set; } = true;
 
@@ -67,21 +86,50 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Do nothing when the game's own vibration option is off.</summary>
     public bool RespectGameSetting { get; set; } = true;
 
-    /// <summary>Only vibrate while in combat.</summary>
     public bool OnlyInCombat { get; set; }
 
-    /// <summary>When a new action starts, cut any pulses still playing from an earlier one.</summary>
+    /// <summary>When a new skill starts, cut pulses still playing from an earlier one.</summary>
     public bool CancelPreviousOnNewAction { get; set; }
 
-    /// <summary>Play the fallback pattern for actions that have no rule.</summary>
-    public bool UseFallback { get; set; }
+    /// <summary>Vibrate every skill automatically, timed to its hits.</summary>
+    public bool AutoEnabled { get; set; } = true;
 
-    public ActionRule Fallback { get; set; } = new()
-    {
-        Pulses = { new VibrationPulse { DurationMs = 120, Strong = 20, Weak = 45 } },
-    };
+    /// <summary>Skills the user switched off in auto mode.</summary>
+    public HashSet<uint> AutoDisabled { get; set; } = new();
+
+    public AutoStrengths AutoStrength { get; set; } = new();
+
+    /// <summary>Use per-hit timings from the MultiHit plugin's config when present.</summary>
+    public bool UseMultiHit { get; set; } = true;
+
+    /// <summary>
+    /// Off by default: skills whose animation already vibrates (built-in C120 entries)
+    /// are left alone. When on, the plugin mutes that vibration and plays its own.
+    /// </summary>
+    public bool ReplaceModVibration { get; set; }
 
     public Dictionary<uint, ActionRule> Rules { get; set; } = new();
 
+    // v1 leftovers, kept so old config files still load. No longer used.
+    public bool UseFallback { get; set; }
+
+    public ActionRule? Fallback { get; set; }
+
+    public void Migrate()
+    {
+        if (this.Version < 2)
+        {
+            // v1 rules counted delays from the animation start.
+            foreach (var r in this.Rules.Values)
+                r.Anchor = PulseAnchor.AnimationStart;
+            this.UseFallback = false;
+            this.Fallback = null;
+        }
+
+        this.Version = CurrentVersion;
+    }
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
+
+    public static List<VibrationPulse> ClonePulses(IEnumerable<VibrationPulse> pulses) => pulses.Select(p => p.Clone()).ToList();
 }

@@ -9,7 +9,7 @@ namespace XIVibration;
 
 /// <summary>
 /// Drives the controller through the game's own <c>PadDeviceInterface::SetVibration</c>,
-/// the same function the game uses for its own rumble (C120 timeline entries, limit breaks, ...).
+/// the same function the game uses for its own rumble.
 /// Because it is the game's pad layer, this works for every controller the game supports
 /// (XInput, DualShock 4, DualSense), including under Wine/Proton.
 ///
@@ -41,6 +41,7 @@ public sealed unsafe class VibrationEngine : IDisposable
     private int sentRight, sentLeft;
     private long lastSendMs;
     private long nextSettingCheckMs;
+    private long suppressGameUntilMs;
 
     public VibrationEngine(Configuration config)
     {
@@ -78,6 +79,14 @@ public sealed unsafe class VibrationEngine : IDisposable
                 this.active.Add(new ActivePulse { Pulse = p.Clone(), StartMs = now, Scale = scale });
             }
         }
+    }
+
+    /// <summary>Ignore the game's own vibration requests for a while (used only when replacing built-in vibration).</summary>
+    public void SuppressGame(float durationMs)
+    {
+        this.suppressGameUntilMs = Math.Max(this.suppressGameUntilMs, this.clock.ElapsedMilliseconds + (long)durationMs);
+        this.gameRight = 0;
+        this.gameLeft = 0;
     }
 
     public void StopAll()
@@ -209,6 +218,13 @@ public sealed unsafe class VibrationEngine : IDisposable
     {
         if (self == this.pad)
         {
+            if (this.clock.ElapsedMilliseconds < this.suppressGameUntilMs)
+            {
+                // Replacing built-in vibration: drop what the game asked for.
+                rightMotor = 0;
+                leftMotor = 0;
+            }
+
             this.gameRight = rightMotor;
             this.gameLeft = leftMotor;
             rightMotor = Math.Max(rightMotor, this.CurrentWeak);
