@@ -24,7 +24,7 @@ public sealed record AutoResult(
             var parts = new List<string>();
             if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
             if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
-            if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound)) != 0) parts.Add("impacts in the animation");
+            if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
             if (all.HasFlag(HitSource.FlyText)) parts.Add("damage number");
             if (all.HasFlag(HitSource.CasterVfx)) parts.Add("effect beats");
             return string.Join(", ", parts);
@@ -35,6 +35,10 @@ public sealed record AutoResult(
 /// <summary>Builds the automatic vibration for a skill: one pulse on every hit of its animation.</summary>
 public static class AutoPattern
 {
+    public const int MinPulseMs = 60;
+    public const int MinOffGapMs = 25;
+    public const int DenseGapMs = 90;
+
     private readonly record struct Level(int Strong, int Weak);
 
     private sealed record Profile(Level Main, int MainMs, PulseShape MainShape, Level Light, Level Heavy, int MinMs, int MaxMs);
@@ -89,17 +93,25 @@ public static class AutoPattern
                     duration = (int)(duration * 1.5f);
             }
 
-            // Keep hits apart: a pulse never runs into the next hit.
+            // Keep hits apart. Motors can't render taps shorter than about 60 ms, so hits closer
+            // than 90 ms run into each other as one continuous pulse that steps through their levels.
+            var startMs = StartMs(hit);
             if (!last)
             {
-                var gap = (hits[i + 1].Frame - hit.Frame) * TmbParser.MsPerFrame;
-                duration = (int)MathF.Min(duration, MathF.Max(40f, gap - 15f));
+                var gap = StartMs(hits[i + 1]) - startMs;
+                duration = gap < DenseGapMs
+                    ? gap
+                    : Math.Max(MinPulseMs, Math.Min(duration, gap - MinOffGapMs));
+            }
+            else
+            {
+                duration = Math.Max(MinPulseMs, duration);
             }
 
             pulses.Add(new VibrationPulse
             {
-                DelayMs = (int)MathF.Round(hit.Frame * TmbParser.MsPerFrame),
-                DurationMs = Math.Max(40, duration),
+                DelayMs = startMs,
+                DurationMs = Math.Max(16, duration),
                 Strong = Math.Clamp(level.Strong, 0, 100),
                 Weak = Math.Clamp(level.Weak + (aoe ? 10 : 0), 0, 100),
                 Shape = shape,
@@ -108,6 +120,8 @@ public static class AutoPattern
 
         return pulses;
     }
+
+    private static int StartMs(HitPoint hit) => (int)MathF.Round(hit.Frame * TmbParser.MsPerFrame);
 
     private static (Profile Profile, float Scale) Pick(ActionInfo? info, AutoStrengths s)
     {

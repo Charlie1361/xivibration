@@ -31,6 +31,9 @@ public sealed class ActionTimelineInfo
 
     public int LengthFrames { get; init; }
 
+    /// <summary>Which files (and sizes) the timeline was read from, sub-timelines included. Stable across sessions.</summary>
+    public string Signature { get; init; } = string.Empty;
+
     public bool HasBuiltInVibration => this.C120.Count > 0;
 
     public int FlyTextFrame => this.FlyTextFrames.Count > 0 ? this.FlyTextFrames[0] : 10;
@@ -108,12 +111,18 @@ public sealed class AnimationTimelines
 
         var gamePath = $"chara/action/{key}.tmb";
         var (data, resolved, fromMod) = this.Read(gamePath);
+        var signature = new System.Text.StringBuilder($"{resolved}:{data?.Length ?? -1}");
         if (data == null)
             return new ActionTimelineInfo { TimelineId = timelineId, GamePath = gamePath, ResolvedPath = resolved, FromMod = fromMod, Error = "File not found" };
 
         try
         {
-            var entries = TmbParser.ParseWithSubTimelines(data, p => this.Read(p).Data);
+            var entries = TmbParser.ParseWithSubTimelines(data, p =>
+            {
+                var sub = this.Read(p);
+                signature.Append($"|{sub.Resolved}:{sub.Data?.Length ?? -1}");
+                return sub.Data;
+            });
             var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).Distinct().OrderBy(f => f).ToList();
             var end = entries.Where(e => e.Tag is "C010" && e.Fields.Length > 0).Select(e => e.TimeFrames + e.Fields[0]).DefaultIfEmpty(0).Max();
             end = Math.Max(end, entries.Select(e => e.TimeFrames).DefaultIfEmpty(0).Max());
@@ -129,6 +138,7 @@ public sealed class AnimationTimelines
                 FlyTextFrames = flyText,
                 C120 = TmbImport.FromEntries(entries),
                 LengthFrames = end,
+                Signature = signature.ToString(),
             };
         }
         catch (Exception ex)

@@ -56,6 +56,13 @@ public sealed class ActionRule
 {
     public RuleOrigin Origin { get; set; } = RuleOrigin.User;
 
+    // For generated rules: what they were built from, so they can be rebuilt when that changes.
+    public int AnalyzerVersion { get; set; }
+
+    public uint TimelineId { get; set; }
+
+    public ulong SourceSignature { get; set; }
+
     public uint ActionId { get; set; }
 
     public bool Enabled { get; set; } = true;
@@ -147,6 +154,19 @@ public sealed class Configuration : IPluginConfiguration
     }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
+
+    /// <summary>FNV-1a: the same value in every session (string.GetHashCode is not).</summary>
+    public static ulong StableHash(string text)
+    {
+        var h = 14695981039346656037UL;
+        foreach (var c in text)
+        {
+            h ^= c;
+            h *= 1099511628211UL;
+        }
+
+        return h;
+    }
 
     public static List<VibrationPulse> ClonePulses(IEnumerable<VibrationPulse> pulses) => pulses.Select(p => p.Clone()).ToList();
 }

@@ -50,6 +50,7 @@ public sealed class MainWindow : Window, IDisposable
     private string? importMessage;
 
     private List<VibrationPulse>? clipboard;
+    private readonly PulseTimelineEditor timeline = new();
     private long testStartMs = -1;
     private long testLengthMs;
 
@@ -81,9 +82,32 @@ public sealed class MainWindow : Window, IDisposable
 
     private void MarkEdited()
     {
+        this.discreteEdit = true;
+        this.MarkEditedContinuous();
+    }
+
+    /// <summary>For drags and sliders: undo snapshots are taken when they start, not every frame.</summary>
+    private void MarkEditedContinuous()
+    {
         if (this.editingRule is { Origin: RuleOrigin.Generated } r)
             r.Origin = RuleOrigin.User;
         this.MarkDirty();
+    }
+
+    private bool discreteEdit;
+    private List<VibrationPulse> undoBefore = new();
+
+    private void BeginUndoSection(ActionRule rule)
+    {
+        this.undoBefore = Configuration.ClonePulses(rule.Pulses);
+        this.discreteEdit = false;
+    }
+
+    private void EndUndoSection(ActionRule rule)
+    {
+        if (this.discreteEdit)
+            this.timeline.Snapshot(rule.ActionId, this.undoBefore);
+        this.discreteEdit = false;
     }
 
     private void MarkDirty()
@@ -453,17 +477,7 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
         if (ImGui.Button("Customize"))
-        {
-            this.Config.Rules[id] = new ActionRule
-            {
-                ActionId = id,
-                Anchor = PulseAnchor.AnimationStart,
-                Strength = builtIn ? 1f : plan.Scale,
-                Pulses = Configuration.ClonePulses(preview.Count > 0 ? preview : plan.Auto.Pulses),
-            };
-            this.Config.AutoDisabled.Remove(id);
-            this.MarkDirty();
-        }
+            this.CreateCustomRule(plan, preview, builtIn);
 
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Make your own pattern for this skill, starting from this one.");
@@ -485,13 +499,47 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        this.DrawTimeline(preview, builtIn ? 1f : plan.Scale, plan.Auto.HitMs);
-
-        if (preview.Count > 0)
+        this.timeline.Draw(new PulseTimelineEditor.Input
         {
-            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            foreach (var p in preview)
-                ImGui.TextUnformatted($"  {p.DelayMs,5} ms   {p.DurationMs,4} ms   strong {p.Strong,3}%   weak {p.Weak,3}%   {ShapeName(p.Shape)}");
+            Key = id,
+            Display = preview,
+            Strength = builtIn ? 1f : plan.Scale,
+            Hits = plan.Auto.Hits,
+            AutoPulses = plan.Auto.Pulses,
+            MakeEditable = () => this.CreateCustomRule(plan, preview, builtIn).Pulses,
+            Edited = this.MarkEdited,
+            PlayheadMs = this.PlayheadMs,
+        });
+    }
+
+    private ActionRule CreateCustomRule(SkillPlan plan, IReadOnlyList<VibrationPulse> preview, bool builtIn)
+    {
+        var rule = new ActionRule
+        {
+            ActionId = plan.ActionId,
+            Anchor = PulseAnchor.AnimationStart,
+            Strength = builtIn ? 1f : plan.Scale,
+            Pulses = Configuration.ClonePulses(preview.Count > 0 ? preview : plan.Auto.Pulses),
+        };
+        this.Config.Rules[plan.ActionId] = rule;
+        this.Config.AutoDisabled.Remove(plan.ActionId);
+        this.editingRule = rule;
+        this.MarkDirty();
+        return rule;
+    }
+
+    /// <summary>Where the Test playhead is, in ms from the animation start, while a test plays.</summary>
+    private float? PlayheadMs
+    {
+        get
+        {
+            if (this.testStartMs < 0)
+                return null;
+            var elapsed = Clock.NowMs - this.testStartMs;
+            if (elapsed <= Math.Max(this.testLengthMs, 1))
+                return elapsed;
+            this.testStartMs = -1;
+            return null;
         }
     }
 
@@ -519,7 +567,7 @@ public sealed class MainWindow : Window, IDisposable
         using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
         {
             if (ImGui.Button("  Test  "))
-                this.Test(plan.Pulses, rule.Strength);
+                this.Test(plan.Pulses, plan.Scale);
         }
 
         ImGui.SameLine();
@@ -578,11 +626,26 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetTooltip($"First hit of this skill is at {firstHit} ms. Counting from it keeps presets on the hit.");
 
         ImGui.Spacing();
+        this.BeginUndoSection(rule);
         this.DrawPatternTools(rule);
+        this.EndUndoSection(rule);
+        var offset = rule.Anchor == PulseAnchor.FirstHit ? firstHit : 0;
         ImGui.Spacing();
-        this.DrawTimeline(plan.Pulses, rule.Strength, plan.Auto.HitMs);
+        this.timeline.Draw(new PulseTimelineEditor.Input
+        {
+            Key = rule.ActionId,
+            Pulses = rule.Pulses,
+            OffsetMs = offset,
+            Strength = plan.Scale,
+            Hits = plan.Auto.Hits,
+            AutoPulses = plan.Auto.Pulses,
+            Edited = this.MarkEdited,
+            PlayheadMs = this.PlayheadMs,
+        });
         ImGui.Spacing();
-        this.DrawPulseTable(rule);
+        this.BeginUndoSection(rule);
+        this.DrawPulseTable(rule, offset);
+        this.EndUndoSection(rule);
     }
 
     /// <summary>Switch anchor and shift delays so the pattern stays where it was.</summary>
@@ -590,7 +653,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         var shift = anchor == PulseAnchor.FirstHit ? -firstHitMs : firstHitMs;
         foreach (var p in rule.Pulses)
-            p.DelayMs = Math.Max(0, p.DelayMs + shift);
+            p.DelayMs = anchor == PulseAnchor.FirstHit ? Math.Max(-firstHitMs, p.DelayMs + shift) : Math.Max(0, p.DelayMs + shift);
         rule.Anchor = anchor;
         this.MarkEdited();
     }
@@ -599,7 +662,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         this.plugin.Engine.StopAll();
         this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true);
-        this.testStartMs = this.clock.ElapsedMilliseconds;
+        this.testStartMs = Clock.NowMs;
         this.testLengthMs = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
     }
 
@@ -711,95 +774,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Separator();
     }
 
-    /// <summary>Two motor lanes over time, with the skill's hit frames as white ticks.</summary>
-    private void DrawTimeline(IReadOnlyList<VibrationPulse> pulses, float strength, IReadOnlyList<float> hitMs)
-    {
-        var scale = ImGuiHelpers.GlobalScale;
-        var dl = ImGui.GetWindowDrawList();
-        var width = ImGui.GetContentRegionAvail().X;
-        var laneH = 34 * scale;
-        var labelH = ImGui.GetTextLineHeight();
-        var graphH = laneH * 2 + 6 * scale;
-        var origin = ImGui.GetCursorScreenPos();
-
-        var total = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
-        if (hitMs.Count > 0)
-            total = Math.Max(total, (int)hitMs.Max() + 100);
-        var span = Math.Max(500, (int)(Math.Ceiling(total / 250.0) * 250));
-        float X(float ms) => origin.X + width * ms / span;
-
-        dl.AddRectFilled(origin, origin + new Vector2(width, graphH), ImGui.GetColorU32(ImGuiCol.FrameBg), 4f);
-
-        var gridCol = ImGui.GetColorU32(new Vector4(1, 1, 1, 0.07f));
-        var labelCol = ImGui.GetColorU32(Dim);
-        for (var ms = 0; ms <= span; ms += 100)
-        {
-            var x = X(ms);
-            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + graphH), gridCol);
-            if (ms % 500 == 0)
-                dl.AddText(new Vector2(x + 2, origin.Y + graphH), labelCol, $"{ms / 1000f:0.0}s");
-        }
-
-        var strongTop = origin.Y;
-        var weakTop = origin.Y + laneH + 6 * scale;
-        var strongCol = ImGui.GetColorU32(StrongColor);
-        var weakCol = ImGui.GetColorU32(WeakColor);
-        var step = Math.Max(1f, 2f * scale);
-
-        foreach (var p in pulses)
-        {
-            if (p.DurationMs <= 0)
-                continue;
-            var x0 = X(p.DelayMs);
-            var x1 = X(p.DelayMs + p.DurationMs);
-            for (var x = x0; x < x1; x += step)
-            {
-                var t = (x - x0) / Math.Max(1f, x1 - x0) * p.DurationMs;
-                var env = VibrationEngine.Envelope(p.Shape, t, p.DurationMs) * strength;
-                var hs = Math.Clamp(p.Strong * env / 100f, 0f, 1f) * laneH;
-                var hw = Math.Clamp(p.Weak * env / 100f, 0f, 1f) * laneH;
-                var xe = Math.Min(x + step, x1);
-                if (hs > 0)
-                    dl.AddRectFilled(new Vector2(x, strongTop + laneH - hs), new Vector2(xe, strongTop + laneH), strongCol);
-                if (hw > 0)
-                    dl.AddRectFilled(new Vector2(x, weakTop + laneH - hw), new Vector2(xe, weakTop + laneH), weakCol);
-            }
-        }
-
-        var hitCol = ImGui.GetColorU32(HitColor);
-        foreach (var ms in hitMs)
-        {
-            var x = X(ms);
-            dl.AddLine(new Vector2(x, origin.Y - 2 * scale), new Vector2(x, origin.Y + graphH), hitCol, 1.5f * scale);
-            dl.AddTriangleFilled(new Vector2(x - 4 * scale, origin.Y - 6 * scale), new Vector2(x + 4 * scale, origin.Y - 6 * scale), new Vector2(x, origin.Y), hitCol);
-        }
-
-        dl.AddText(new Vector2(origin.X + 4, strongTop + 2), ImGui.GetColorU32(ImGuiCol.Text), "Strong");
-        dl.AddText(new Vector2(origin.X + 4, weakTop + 2), ImGui.GetColorU32(ImGuiCol.Text), "Weak");
-
-        if (this.testStartMs >= 0)
-        {
-            var elapsed = this.clock.ElapsedMilliseconds - this.testStartMs;
-            if (elapsed <= Math.Max(this.testLengthMs, 1))
-            {
-                var x = X(elapsed);
-                dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, origin.Y + graphH), ImGui.GetColorU32(new Vector4(1, 1, 1, 0.9f)), 2f);
-            }
-            else
-            {
-                this.testStartMs = -1;
-            }
-        }
-
-        ImGui.Dummy(new Vector2(width, graphH + labelH + 2 * scale));
-        if (hitMs.Count > 0)
-        {
-            using var c = ImRaii.PushColor(ImGuiCol.Text, Dim);
-            ImGui.TextUnformatted("White marks = hits.");
-        }
-    }
-
-    private void DrawPulseTable(ActionRule rule)
+    private void DrawPulseTable(ActionRule rule, int offset)
     {
         var scale = ImGuiHelpers.GlobalScale;
 
@@ -854,19 +829,24 @@ public sealed class MainWindow : Window, IDisposable
             var p = rule.Pulses[i];
             using var pid = ImRaii.PushId(i);
             ImGui.TableNextRow();
+            if (this.timeline.IsSelected(p))
+                ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg1, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.12f)));
 
             ImGui.TableNextColumn();
-            ImGui.AlignTextToFramePadding();
-            ImGui.TextUnformatted($"{i + 1}");
+            if (ImGui.Selectable($"{i + 1}", this.timeline.IsSelected(p)))
+                this.timeline.Select(p, ImGui.GetIO().KeyCtrl);
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
             var delay = p.DelayMs;
-            if (ImGui.DragInt("##delay", ref delay, 5f, 0, 10000, "%d"))
+            if (ImGui.DragInt("##delay", ref delay, 5f, -offset, 10000, "%d"))
             {
-                p.DelayMs = Math.Clamp(delay, 0, 10000);
-                this.MarkEdited();
+                p.DelayMs = Math.Clamp(delay, -offset, 10000);
+                this.MarkEditedContinuous();
             }
+
+            if (ImGui.IsItemActivated())
+                this.timeline.Snapshot(rule.ActionId, this.undoBefore);
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
@@ -874,8 +854,11 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.DragInt("##dur", ref dur, 5f, 16, 5000, "%d"))
             {
                 p.DurationMs = Math.Clamp(dur, 16, 5000);
-                this.MarkEdited();
+                this.MarkEditedContinuous();
             }
+
+            if (ImGui.IsItemActivated())
+                this.timeline.Snapshot(rule.ActionId, this.undoBefore);
 
             ImGui.TableNextColumn();
             ImGui.SetNextItemWidth(-1);
@@ -885,8 +868,11 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.SliderInt("##strong", ref strong, 0, 100, "%d%%"))
                 {
                     p.Strong = strong;
-                    this.MarkEdited();
+                    this.MarkEditedContinuous();
                 }
+
+            if (ImGui.IsItemActivated())
+                this.timeline.Snapshot(rule.ActionId, this.undoBefore);
             }
 
             ImGui.TableNextColumn();
@@ -897,8 +883,11 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.SliderInt("##weak", ref weak, 0, 100, "%d%%"))
                 {
                     p.Weak = weak;
-                    this.MarkEdited();
+                    this.MarkEditedContinuous();
                 }
+
+            if (ImGui.IsItemActivated())
+                this.timeline.Snapshot(rule.ActionId, this.undoBefore);
             }
 
             ImGui.TableNextColumn();
@@ -959,7 +948,7 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
-    private static string ShapeName(PulseShape s) => s switch
+    internal static string ShapeName(PulseShape s) => s switch
     {
         PulseShape.Constant => "Constant",
         PulseShape.FadeOut => "Fade out",
@@ -1052,6 +1041,7 @@ public sealed class MainWindow : Window, IDisposable
         StatusLine("Gamepad device", e.PadFound, e.PadFound ? "found" : "not found");
         StatusLine("Vibration hook", e.HookActive, e.HookActive ? "active" : e.LastError ?? "not active, calling it directly");
         StatusLine("Skill hook", this.plugin.Watcher.HookActive, this.plugin.Watcher.HookActive ? "active" : this.plugin.Watcher.LastError ?? "failed");
+        StatusLine("Animation timing hook", this.plugin.Sync.HookActive, this.plugin.Sync.HookActive ? "active, patterns start with the animation" : (this.plugin.Sync.LastError ?? "failed") + ", timing from the server message");
         var gv = e.GameVibrationEnabled;
         StatusLine("Game option: Enable vibration", gv != false, gv == null ? "could not read" : gv.Value ? "on" : "off");
         var pen = this.plugin.Timelines.PenumbraConnected;
@@ -1084,6 +1074,11 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted($"Hits (frames): {string.Join(", ", plan.Auto.Hits.Select(h => h.Frame))}   from: {plan.Auto.SourceText}   built-in vibration entries: {tl.C120.Count}");
         if (plan.Pulses.Count > 0)
             ImGui.TextUnformatted("Pulses at: " + string.Join(", ", plan.Pulses.Select(p => $"{p.DelayMs} ms")));
+        if (this.plugin.LastStart is { } st && plan.Mode is SkillMode.Auto or SkillMode.Custom)
+        {
+            var gap = st.GapMs == 0 ? "same moment" : st.GapMs > 0 ? $"animation {st.GapMs} ms before the server message" : $"animation {-st.GapMs} ms after the server message";
+            ImGui.TextUnformatted($"Started from: {st.Source} ({gap})   animation speed: {st.Speed:0.00}x");
+        }
         if (tl.Error != null)
             ImGui.TextUnformatted("Note: " + tl.Error);
     }
@@ -1142,7 +1137,20 @@ public sealed class MainWindow : Window, IDisposable
             "\"Replace built-in vibration\" in Settings.");
         ImGui.Spacing();
         ImGui.TextWrapped(
+            "Patterns start when the animation actually starts on your character and follow its playback speed. Generated patterns " +
+            "are rebuilt automatically when a skill's animation changes (another mod or option).");
+        ImGui.Spacing();
+        ImGui.TextWrapped("Editing");
+        ImGui.Separator();
+        ImGui.TextWrapped(
             "In the Skills tab you can switch single skills off, test them, and edit any pattern. An edited pattern is yours and " +
-            "is never changed by re-analysis.");
+            "is never changed by re-analysis. The timeline works like clips on DAW tracks: the Strong and Weak motors are two tracks, " +
+            "and every hit of the animation is a numbered waypoint.");
+        ImGui.BulletText("Drag a clip to move it. Drag its left edge to trim the start and its right edge to change the length.");
+        ImGui.BulletText("Drag the line on top of a clip to set that motor's level. Hold Shift to set both motors.");
+        ImGui.BulletText("Clips snap to hits, other clips and animation frames. Alt: no snapping. Ctrl: 1 ms steps.");
+        ImGui.BulletText("Click a waypoint to add a clip on that hit, or to move the selected clips there. Double-click to add a clip.");
+        ImGui.BulletText("Ctrl-click or drag a box to select. Del, Ctrl+D, Ctrl+C / Ctrl+V, Ctrl+A, Ctrl+Z / Ctrl+Y.");
+        ImGui.BulletText("Right-click a clip to change its shape. Ctrl + mouse wheel zooms, the wheel scrolls.");
     }
 }

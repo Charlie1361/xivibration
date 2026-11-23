@@ -28,7 +28,6 @@ public sealed unsafe class VibrationEngine : IDisposable
     }
 
     private readonly Configuration config;
-    private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly List<ActivePulse> active = new();
     private readonly object sync = new();
 
@@ -61,12 +60,13 @@ public sealed unsafe class VibrationEngine : IDisposable
 
     public string? LastError { get; private set; }
 
-    public void Play(IReadOnlyList<VibrationPulse> pulses, float scale, bool ignoreGates = false)
+    /// <param name="startMs">When the pattern's time 0 is (Clock.NowMs). May be in the past; pulses already over are skipped.</param>
+    public void Play(IReadOnlyList<VibrationPulse> pulses, float scale, bool ignoreGates = false, long? startMs = null)
     {
         if (!ignoreGates && !this.config.Enabled)
             return;
 
-        var now = this.clock.ElapsedMilliseconds;
+        var now = startMs ?? Clock.NowMs;
         lock (this.sync)
         {
             if (!ignoreGates && this.config.CancelPreviousOnNewAction)
@@ -84,7 +84,7 @@ public sealed unsafe class VibrationEngine : IDisposable
     /// <summary>Ignore the game's own vibration requests for a while (used only when replacing built-in vibration).</summary>
     public void SuppressGame(float durationMs)
     {
-        this.suppressGameUntilMs = Math.Max(this.suppressGameUntilMs, this.clock.ElapsedMilliseconds + (long)durationMs);
+        this.suppressGameUntilMs = Math.Max(this.suppressGameUntilMs, Clock.NowMs + (long)durationMs);
         this.gameRight = 0;
         this.gameLeft = 0;
     }
@@ -101,7 +101,7 @@ public sealed unsafe class VibrationEngine : IDisposable
         if (!this.EnsurePad())
             return;
 
-        var now = this.clock.ElapsedMilliseconds;
+        var now = Clock.NowMs;
         if (now >= this.nextSettingCheckMs)
         {
             this.nextSettingCheckMs = now + 1000;
@@ -218,7 +218,7 @@ public sealed unsafe class VibrationEngine : IDisposable
     {
         if (self == this.pad)
         {
-            if (this.clock.ElapsedMilliseconds < this.suppressGameUntilMs)
+            if (Clock.NowMs < this.suppressGameUntilMs)
             {
                 // Replacing built-in vibration: drop what the game asked for.
                 rightMotor = 0;

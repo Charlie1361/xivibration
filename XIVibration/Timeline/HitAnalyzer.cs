@@ -17,6 +17,7 @@ public enum HitSource
     BuiltInVibration = 16,
     MultiHit = 32,
     CasterVfx = 64,
+    ExtraStrike = 128,
 }
 
 /// <summary>One moment the controller should hit. Weight 0..1 is how hard.</summary>
@@ -34,6 +35,9 @@ public sealed record HitPoint(int Frame, float Weight, HitSource Sources);
 /// </summary>
 public static partial class HitAnalyzer
 {
+    /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
+    public const int AnalyzerVersion = 2;
+
     /// <summary>Events closer than this (frames) are the same hit.</summary>
     public const int MergeFrames = 3;
 
@@ -61,6 +65,10 @@ public static partial class HitAnalyzer
                     break;
                 case "C063" when IsTargetSound(e.Path):
                     events.Add((e.TimeFrames, 0.7f, HitSource.TargetSound));
+                    break;
+                case "C063" when IsExtraStrikeSound(e.Path):
+                    // A follow-up strike: often the only marker of a skill's last hit.
+                    events.Add((e.TimeFrames, 0.8f, HitSource.ExtraStrike));
                     break;
                 case "C120" when e.Fields.Length >= 3:
                     events.Add((e.TimeFrames, e.Fields[2] switch { 1 => 1f, 3 => 0.7f, _ => 0.45f }, HitSource.BuiltInVibration));
@@ -95,6 +103,9 @@ public static partial class HitAnalyzer
             if (lengthFrames > 0)
                 list = list.Where(h => h.Frame <= lengthFrames + 5).ToList();
 
+            // Two entries on the same frame are one hit.
+            list = list.GroupBy(h => h.Frame).Select(g => (Frame: g.Key, g.Sum(h => h.Item2))).ToList();
+
             var max = list.Count == 0 ? 1f : Math.Max(1f, list.Max(h => h.Item2));
             foreach (var (frame, pct) in list.OrderBy(h => h.Frame))
                 hits.Add((frame, 0.3f + 0.7f * pct / max, HitSource.MultiHit));
@@ -127,7 +138,7 @@ public static partial class HitAnalyzer
 
         // The damage number pops when the server applies the damage, often a few frames off the
         // visible impact. When the animation shows its impacts, a damage number on its own isn't a hit.
-        var impacts = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.BuiltInVibration | HitSource.MultiHit;
+        var impacts = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.BuiltInVibration | HitSource.MultiHit | HitSource.ExtraStrike;
         if (hits.Any(h => (h.Sources & impacts) != 0))
             hits.RemoveAll(h => h.Sources == HitSource.FlyText);
 
@@ -152,6 +163,10 @@ public static partial class HitAnalyzer
     public static bool IsTargetSound(string path)
         => path.Length > 0 && TargetSoundRegex().IsMatch(Path.GetFileName(path).ToLowerInvariant());
 
+    // ..._add.scd, ..._c_add.scd, ..._add2.scd
+    public static bool IsExtraStrikeSound(string path)
+        => path.Length > 0 && ExtraStrikeRegex().IsMatch(Path.GetFileName(path).ToLowerInvariant());
+
     // Shared muzzle/charge effects every skill starts with.
     private static bool IsGenericVfx(string path)
     {
@@ -164,4 +179,7 @@ public static partial class HitAnalyzer
 
     [GeneratedRegex(@"_(m?t\d?|hit\d?)\.scd$")]
     private static partial Regex TargetSoundRegex();
+
+    [GeneratedRegex(@"_(c_)?add\d*\.scd$")]
+    private static partial Regex ExtraStrikeRegex();
 }

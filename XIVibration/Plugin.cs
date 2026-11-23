@@ -27,6 +27,9 @@ public enum SkillMode
     Off,
 }
 
+/// <summary>How a pattern's start was timed.</summary>
+public sealed record StartInfo(string Source, long GapMs, float Speed);
+
 /// <summary>Everything decided for one skill: what plays, when, and why.</summary>
 public sealed record SkillPlan(
     uint ActionId,
@@ -61,6 +64,15 @@ public sealed class Plugin : IDalamudPlugin
     public AnimationTimelines Timelines { get; } = new();
     public MultiHitData MultiHit { get; }
     public SkillAnalysis Analysis { get; }
+    public AnimationSync Sync { get; }
+
+    /// <summary>How the last pattern's start was timed.</summary>
+    public StartInfo? LastStart { get; private set; }
+
+    /// <summary>How long to wait for the animation after the server message before falling back.</summary>
+    private const long PendingWaitMs = 150;
+
+    private (SkillPlan Plan, long ReceivedMs, HashSet<uint> TimelineIds)? pending;
 
     /// <summary>The last skill you used and what was played for it.</summary>
     public SkillPlan? LastPlan { get; private set; }
@@ -82,6 +94,8 @@ public sealed class Plugin : IDalamudPlugin
         this.Watcher = new ActionWatcher();
         this.Watcher.LocalActionUsed += this.OnLocalActionUsed;
         this.Analysis = new SkillAnalysis(this);
+        this.Sync = new AnimationSync();
+        this.Sync.Played += this.OnAnimationPlayed;
 
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
@@ -101,6 +115,14 @@ public sealed class Plugin : IDalamudPlugin
     private void OnFrameworkUpdate(IFramework framework)
     {
         this.Analysis.Update();
+
+        // The animation never showed up: time the pattern from the server message.
+        if (this.pending is { } p && Clock.NowMs - p.ReceivedMs > PendingWaitMs)
+        {
+            this.pending = null;
+            this.Start(p.Plan, p.ReceivedMs, 1f, "server message (animation not seen)", 0);
+        }
+
         this.Engine.Update();
     }
 
@@ -184,11 +206,56 @@ public sealed class Plugin : IDalamudPlugin
         if (plan.Mode is not (SkillMode.Custom or SkillMode.Auto))
             return;
 
+        // Time 0 is when the animation really starts on the character.
+        var ids = new HashSet<uint> { plan.Timeline.TimelineId, playedTimeline, this.Timelines.TimelineOf(actionId) };
+        ids.Remove(0);
+        var now = Clock.NowMs;
+        var started = this.Sync.FindRecent(ids, 1000);
+        if (started is { } e)
+        {
+            this.pending = null;
+            this.Start(plan, e.TimeMs, e.Speed, "animation start", now - e.TimeMs);
+        }
+        else if (!this.Sync.HookActive || ids.Count == 0)
+        {
+            this.Start(plan, now, 1f, "server message", 0);
+        }
+        else
+        {
+            this.pending = (plan, now, ids);
+        }
+    }
+
+    private void OnAnimationPlayed(AnimationSync.PlayEvent e)
+    {
+        if (this.pending is not { } p || !p.TimelineIds.Contains(e.TimelineId))
+            return;
+        this.pending = null;
+        this.Start(p.Plan, e.TimeMs, e.Speed, "animation start", p.ReceivedMs - e.TimeMs);
+    }
+
+    /// <param name="gapMs">How much earlier (+) or later (-) the animation started than the server message.</param>
+    private void Start(SkillPlan plan, long startMs, float speed, string source, long gapMs)
+    {
+        var pulses = plan.Pulses;
+        if (Math.Abs(speed - 1f) > 0.01f)
+        {
+            // The animation plays faster or slower than normal: so does its pattern.
+            pulses = pulses.Select(p =>
+            {
+                var c = p.Clone();
+                c.DelayMs = (int)MathF.Round(p.DelayMs / speed);
+                c.DurationMs = Math.Max(16, (int)MathF.Round(p.DurationMs / speed));
+                return c;
+            }).ToList();
+        }
+
         // Off by default. Only then does the plugin mute an animation's own vibration.
         if (this.Config.ReplaceModVibration && plan.Timeline.HasBuiltInVibration)
-            this.Engine.SuppressGame(plan.Timeline.LengthMs + 200);
+            this.Engine.SuppressGame(plan.Timeline.LengthMs / speed + 200);
 
-        this.Engine.Play(plan.Pulses, plan.Scale * this.Config.MasterStrength);
+        this.LastStart = new StartInfo(source, gapMs, speed);
+        this.Engine.Play(pulses, plan.Scale * this.Config.MasterStrength, startMs: startMs);
     }
 
     private void OnCommand(string command, string args)
@@ -239,6 +306,8 @@ public sealed class Plugin : IDalamudPlugin
 
         this.Watcher.LocalActionUsed -= this.OnLocalActionUsed;
         this.Watcher.Dispose();
+        this.Sync.Played -= this.OnAnimationPlayed;
+        this.Sync.Dispose();
         this.Engine.Dispose();
         this.windows.RemoveAllWindows();
         this.mainWindow.Dispose();

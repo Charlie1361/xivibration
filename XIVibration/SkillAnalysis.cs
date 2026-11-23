@@ -2,13 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using XIVibration.Timeline;
 
 namespace XIVibration;
 
 /// <summary>
 /// After start-up, analyses the animation of every skill of every job (the one actually
-/// loaded, mods included) and saves a vibration pattern for each skill that doesn't have
-/// one yet. Existing patterns are never touched. Runs a few skills per frame.
+/// loaded, mods included) and saves a vibration pattern for each skill.
+/// - Skills without a pattern get one.
+/// - Generated patterns are rebuilt when their animation changed (other mod or option)
+///   or the analysis improved. They keep their on/off and strength.
+/// - Patterns the user made or edited are never touched.
+/// Runs a few skills per frame.
 /// </summary>
 public sealed class SkillAnalysis
 {
@@ -21,6 +26,7 @@ public sealed class SkillAnalysis
     private DateTime loggedInAt = DateTime.MaxValue;
     private bool queued;
     private int created;
+    private int refreshed;
 
     public SkillAnalysis(Plugin plugin)
     {
@@ -33,24 +39,11 @@ public sealed class SkillAnalysis
 
     public int Done => this.Total - this.queue.Count;
 
-    public int CreatedLastRun => this.created;
-
     public string Status { get; private set; } = "Waiting for login";
 
-    /// <summary>Drop every generated pattern and analyse again. The user's own patterns are kept.</summary>
+    /// <summary>Check every skill again now (for example after changing mods). The user's own patterns are kept.</summary>
     public void ReanalyseAll()
     {
-        var cfg = this.plugin.Config;
-        foreach (var rule in cfg.Rules.Values.Where(r => r.Origin == RuleOrigin.Generated).ToList())
-        {
-            // Remember skills the user switched off.
-            if (!rule.Enabled)
-                cfg.AutoDisabled.Add(rule.ActionId);
-            else
-                cfg.AutoDisabled.Remove(rule.ActionId);
-            cfg.Rules.Remove(rule.ActionId);
-        }
-
         this.plugin.Timelines.Clear();
         this.queue.Clear();
         this.queued = false;
@@ -61,9 +54,9 @@ public sealed class SkillAnalysis
     public ActionRule Regenerate(uint actionId)
     {
         var cfg = this.plugin.Config;
-        var enabled = !cfg.Rules.TryGetValue(actionId, out var old) || old.Enabled;
+        cfg.Rules.TryGetValue(actionId, out var old);
         cfg.Rules.Remove(actionId);
-        var rule = this.Create(actionId, enabled);
+        var rule = this.Create(actionId, old?.Enabled ?? !cfg.AutoDisabled.Contains(actionId), old?.Origin == RuleOrigin.Generated ? old.Strength : 1f);
         cfg.Save();
         return rule;
     }
@@ -85,7 +78,7 @@ public sealed class SkillAnalysis
         {
             if (DateTime.UtcNow - this.loggedInAt < StartDelay)
                 return;
-            if (!this.PenumbraReady() && DateTime.UtcNow - this.loggedInAt < PenumbraWait)
+            if (!PenumbraReady() && DateTime.UtcNow - this.loggedInAt < PenumbraWait)
             {
                 this.Status = "Waiting for Penumbra";
                 return;
@@ -103,12 +96,18 @@ public sealed class SkillAnalysis
         while (this.queue.Count > 0 && sw.Elapsed.TotalMilliseconds < FrameBudgetMs)
         {
             var id = this.queue.Dequeue();
-            if (cfg.Rules.ContainsKey(id))
-                continue;
             try
             {
-                this.Create(id, !cfg.AutoDisabled.Contains(id));
-                this.created++;
+                if (!cfg.Rules.TryGetValue(id, out var rule))
+                {
+                    this.Create(id, !cfg.AutoDisabled.Contains(id), 1f);
+                    this.created++;
+                }
+                else if (rule.Origin == RuleOrigin.Generated && this.IsOutdated(id, rule))
+                {
+                    this.Create(id, rule.Enabled, rule.Strength);
+                    this.refreshed++;
+                }
             }
             catch (Exception ex)
             {
@@ -119,13 +118,30 @@ public sealed class SkillAnalysis
         this.Status = $"Analysing animations... {this.Done}/{this.Total}";
         if (this.queue.Count == 0)
         {
-            cfg.Save();
-            this.Status = $"Done: {cfg.GeneratedCount} skills analysed, {cfg.UserCount} of your own patterns kept";
-            Plugin.Log.Info($"Analysed {this.created} skills.");
+            if (this.created + this.refreshed > 0)
+                cfg.Save();
+            this.Status = $"Done: {cfg.GeneratedCount} skills analysed ({this.created} new, {this.refreshed} updated), {cfg.UserCount} of your own patterns kept";
+            Plugin.Log.Info($"Skill analysis: {this.created} new, {this.refreshed} updated.");
         }
     }
 
-    private ActionRule Create(uint actionId, bool enabled)
+    /// <summary>The fingerprint of everything a generated pattern was built from.</summary>
+    public ulong SignatureOf(uint actionId, ActionTimelineInfo tl)
+    {
+        var mh = this.plugin.MultiHitFor(actionId);
+        var mhText = mh == null ? "-" : string.Join(",", mh.Hits.Select(h => $"{h.Frame}:{h.Percent}")) + $"/{mh.FinalDelayFrames}";
+        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}");
+    }
+
+    private bool IsOutdated(uint actionId, ActionRule rule)
+    {
+        if (rule.AnalyzerVersion != HitAnalyzer.AnalyzerVersion)
+            return true;
+        var tl = this.plugin.Timelines.ForAction(actionId);
+        return rule.TimelineId != tl.TimelineId || rule.SourceSignature != this.SignatureOf(actionId, tl);
+    }
+
+    private ActionRule Create(uint actionId, bool enabled, float strength)
     {
         var tl = this.plugin.Timelines.ForAction(actionId);
         var auto = this.plugin.BuildAuto(actionId, tl);
@@ -135,7 +151,11 @@ public sealed class SkillAnalysis
             Origin = RuleOrigin.Generated,
             Anchor = PulseAnchor.AnimationStart,
             Enabled = enabled,
-            Pulses = auto.Pulses,
+            Strength = strength,
+            Pulses = Configuration.ClonePulses(auto.Pulses),
+            AnalyzerVersion = HitAnalyzer.AnalyzerVersion,
+            TimelineId = tl.TimelineId,
+            SourceSignature = this.SignatureOf(actionId, tl),
         };
         this.plugin.Config.Rules[actionId] = rule;
         return rule;
@@ -145,12 +165,13 @@ public sealed class SkillAnalysis
     {
         this.queued = true;
         this.created = 0;
+        this.refreshed = 0;
         var catalog = this.plugin.Catalog;
         var cfg = this.plugin.Config;
         var seen = new HashSet<uint>();
         var order = new List<uint>();
 
-        // The current job first, then every other job.
+        // The current job first, then every other job, then generated patterns of anything else.
         var current = ActionCatalog.CurrentJobId();
         foreach (var job in new[] { current }.Concat(catalog.Jobs.Select(j => j.Id)))
         {
@@ -158,20 +179,24 @@ public sealed class SkillAnalysis
                 continue;
             foreach (var a in catalog.ForJob(job))
             {
-                if (seen.Add(a.Id) && !cfg.Rules.ContainsKey(a.Id))
+                if (seen.Add(a.Id) && (!cfg.Rules.TryGetValue(a.Id, out var r) || r.Origin == RuleOrigin.Generated))
                     order.Add(a.Id);
             }
+        }
+
+        foreach (var (id, rule) in cfg.Rules)
+        {
+            if (rule.Origin == RuleOrigin.Generated && seen.Add(id))
+                order.Add(id);
         }
 
         foreach (var id in order)
             this.queue.Enqueue(id);
         this.Total = order.Count;
-        this.Status = order.Count == 0
-            ? $"Up to date: {cfg.GeneratedCount} skills analysed, {cfg.UserCount} of your own patterns"
-            : $"Analysing animations... 0/{order.Count}";
+        this.Status = $"Analysing animations... 0/{order.Count}";
     }
 
-    private bool PenumbraReady()
+    private static bool PenumbraReady()
     {
         try
         {
