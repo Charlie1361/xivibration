@@ -173,6 +173,15 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool OnlyInCombat { get; set; }
 
+    /// <summary>Test also plays the skill's sounds.</summary>
+    public bool PreviewSound { get; set; } = true;
+
+    /// <summary>Volume of the Test sound, 0..100.</summary>
+    public int PreviewVolume { get; set; } = 60;
+
+    /// <summary>Delay of the Test vibration against its sound (ms), to make up for audio output latency.</summary>
+    public int PreviewSyncMs { get; set; }
+
     /// <summary>
     /// Only my character's animations may vibrate. Mods apply to everyone's animations, so
     /// built-in vibration in a mod would otherwise also fire when other players use the skill.

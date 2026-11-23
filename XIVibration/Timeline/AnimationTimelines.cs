@@ -154,6 +154,8 @@ public sealed class AnimationTimelines
     }
 
     /// <summary>Reads a game file the way the game would load it for the player (mods included).</summary>
+    public (byte[]? Data, string Resolved, bool FromMod) ReadFile(string gamePath) => this.Read(gamePath);
+
     private (byte[]? Data, string Resolved, bool FromMod) Read(string gamePath)
     {
         var resolved = this.Resolve(gamePath);

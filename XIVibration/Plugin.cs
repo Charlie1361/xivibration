@@ -65,6 +65,8 @@ public sealed class Plugin : IDalamudPlugin
     public MultiHitData MultiHit { get; }
     public SkillAnalysis Analysis { get; }
     public AnimationSync Sync { get; }
+    public Audio.SoundPreview PreviewMixer { get; } = new();
+    public Audio.PreviewPlayer PreviewPlayer { get; } = new();
 
     /// <summary>How the last pattern's start was timed.</summary>
     public StartInfo? LastStart { get; private set; }
@@ -280,6 +282,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
             case "stop":
                 this.Engine.StopAll();
+                this.PreviewPlayer.Stop();
                 break;
             case "analyse":
             case "analyze":
@@ -312,6 +315,7 @@ public sealed class Plugin : IDalamudPlugin
         this.Watcher.Dispose();
         this.Sync.Played -= this.OnAnimationPlayed;
         this.Sync.Dispose();
+        this.PreviewPlayer.Dispose();
         this.Engine.Dispose();
         this.windows.RemoveAllWindows();
         this.mainWindow.Dispose();

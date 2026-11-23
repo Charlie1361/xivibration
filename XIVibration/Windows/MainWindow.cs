@@ -175,7 +175,10 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
         if (ImGuiComponents.IconButton("##stopall", FontAwesomeIcon.Stop))
+        {
             this.plugin.Engine.StopAll();
+            this.plugin.PreviewPlayer.Stop();
+        }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Stop all vibration");
 
@@ -469,7 +472,7 @@ public sealed class MainWindow : Window, IDisposable
         using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
         {
             if (ImGui.Button("  Test  "))
-                this.Test(preview, builtIn ? 1f : plan.Scale);
+                this.Test(preview, builtIn ? 1f : plan.Scale, plan.Timeline);
         }
 
         if (builtIn && ImGui.IsItemHovered())
@@ -572,7 +575,7 @@ public sealed class MainWindow : Window, IDisposable
         using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.25f, 1f)))
         {
             if (ImGui.Button("  Test  "))
-                this.Test(plan.Pulses, plan.Scale);
+                this.Test(plan.Pulses, plan.Scale, plan.Timeline);
         }
 
         ImGui.SameLine();
@@ -667,11 +670,31 @@ public sealed class MainWindow : Window, IDisposable
         this.MarkEdited();
     }
 
-    private void Test(IReadOnlyList<VibrationPulse> pulses, float strength)
+    private void Test(IReadOnlyList<VibrationPulse> pulses, float strength, Timeline.ActionTimelineInfo? timeline = null)
     {
         this.plugin.Engine.StopAll();
-        this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true);
-        this.testStartMs = Clock.NowMs;
+        this.plugin.PreviewPlayer.Stop();
+
+        // The skill's sound, mixed at its animation times (mods included).
+        byte[]? wav = null;
+        if (this.Config.PreviewSound && timeline is { Found: true })
+        {
+            try
+            {
+                wav = this.plugin.PreviewMixer.Mix(timeline.Entries, this.plugin.Timelines.ReadFile, this.Config.PreviewVolume / 100f);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warning(ex, "Could not mix the Test sound");
+            }
+        }
+
+        // Sound and vibration start from the same moment.
+        var t0 = Clock.NowMs;
+        if (wav != null)
+            this.plugin.PreviewPlayer.Play(wav);
+        this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true, startMs: t0 + this.Config.PreviewSyncMs);
+        this.testStartMs = t0 + this.Config.PreviewSyncMs;
         this.testLengthMs = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
     }
 
@@ -985,6 +1008,31 @@ public sealed class MainWindow : Window, IDisposable
         this.Check("A new skill cuts off the previous skill's vibration", this.Config.CancelPreviousOnNewAction, v => this.Config.CancelPreviousOnNewAction = v);
 
         ImGui.Spacing();
+        ImGui.TextUnformatted("Test");
+        this.Check("Play the skill's sound with Test", this.Config.PreviewSound, v => this.Config.PreviewSound = v);
+        using (ImRaii.Disabled(!this.Config.PreviewSound))
+        {
+            ImGui.SetNextItemWidth(200 * scale);
+            var vol = this.Config.PreviewVolume;
+            if (ImGui.SliderInt("Sound volume##preview", ref vol, 0, 100, "%d%%"))
+            {
+                this.Config.PreviewVolume = vol;
+                this.MarkDirty();
+            }
+
+            ImGui.SetNextItemWidth(200 * scale);
+            var sync = this.Config.PreviewSyncMs;
+            if (ImGui.SliderInt("Vibration delay vs. sound##preview", ref sync, -200, 300, "%d ms"))
+            {
+                this.Config.PreviewSyncMs = sync;
+                this.MarkDirty();
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("If the Test sound comes out late on your system, delay the vibration by the same amount (or the other way round).");
+        }
+
+        ImGui.Spacing();
         ImGui.TextUnformatted("Automatic vibration");
         ImGui.Separator();
         this.Check("Vibrate every skill automatically, on its hits", this.Config.AutoEnabled, v => this.Config.AutoEnabled = v);
@@ -1144,6 +1192,8 @@ public sealed class MainWindow : Window, IDisposable
         StatusLine("Vibration from other characters", true, this.Config.OnlyMyCharacter
             ? $"blocked {this.plugin.Engine.BlockedFromOthers} time(s) this session"
             : "allowed (\"Only my character's animations may vibrate\" is off)");
+        var pv = this.plugin.PreviewPlayer.LastError;
+        StatusLine("Test sound", pv == null, pv == null ? "ready" : $"not available ({pv})");
         StatusLine("Animation timing hook", this.plugin.Sync.HookActive, this.plugin.Sync.HookActive ? "active, patterns start with the animation" : (this.plugin.Sync.LastError ?? "failed") + ", timing from the server message");
         var gv = e.GameVibrationEnabled;
         StatusLine("Game option: Enable vibration", gv != false, gv == null ? "could not read" : gv.Value ? "on" : "off");

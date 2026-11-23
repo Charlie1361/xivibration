@@ -141,6 +141,9 @@ public static class SoundSegmenter
     /// <summary>The stronger motor of a block is at least this (%), the other in proportion.</summary>
     public const int MinBlockLevel = 25;
 
+    /// <summary>Peaks closer than this are one hit (the loudest one).</summary>
+    public const int PeakGroupMs = 120;
+
     /// <summary>A block covers the top of its bump: this share of the bump's height.</summary>
     public const float TopShare = 0.3f;
 
@@ -257,7 +260,7 @@ public static class SoundSegmenter
     {
         const int step = SoundEnvelope.StepMs;
         var n = sound.Low.Length;
-        var peaks = new List<(int, float)>();
+        var peaks = new List<(int Index, float Prominence)>();
         var raw = new float[n];
         for (var i = 0; i < n; i++)
             raw[i] = Math.Max(sound.Low[i], sound.High[i]);
@@ -302,11 +305,56 @@ public static class SoundSegmenter
             }
 
             var prominence = peak - Math.Max(leftMin, rightMin);
-            if (prominence >= threshold)
-                peaks.Add((i, prominence));
+            if (prominence < threshold)
+                continue;
+
+            // The hit goes on the loudest moment of the bump's top, not its first ripple.
+            var level = peak - prominence * TopShare;
+            var a = i;
+            while (a > 0 && e[a - 1] >= level)
+                a--;
+            var b = i;
+            while (b + 1 < n && e[b + 1] >= level)
+                b++;
+            var loudest = i;
+            for (var k = a; k <= b; k++)
+            {
+                if (raw[k] > raw[loudest])
+                    loudest = k;
+            }
+
+            // Climb to the raw maximum next to it (the smoothed edge can cut it off).
+            for (var guard = 0; guard < 5; guard++)
+            {
+                if (loudest > 0 && raw[loudest - 1] > raw[loudest])
+                    loudest--;
+                else if (loudest + 1 < n && raw[loudest + 1] > raw[loudest])
+                    loudest++;
+                else
+                    break;
+            }
+
+            peaks.Add((loudest, prominence));
         }
 
-        return (peaks, e);
+        // Close peaks are one hit: keep the loudest of each group.
+        var group = Math.Max(1, PeakGroupMs / step);
+        var kept = new List<(int Index, float Prominence)>();
+        foreach (var p in peaks.OrderBy(p => p.Index))
+        {
+            if (kept.Count > 0 && p.Index - kept[^1].Index < group)
+            {
+                var last = kept[^1];
+                if (raw[p.Index] > raw[last.Index] || (raw[p.Index] == raw[last.Index] && p.Prominence > last.Prominence))
+                    kept[^1] = p;
+                continue;
+            }
+
+            if (kept.Count == 0 || kept[^1].Index != p.Index)
+                kept.Add(p);
+        }
+
+        return (kept, e);
     }
 
     /// <summary>The loud part of a band in a block (80th percentile), as 0..100.</summary>

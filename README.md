@@ -17,7 +17,7 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
   - "Effect on the target" is ignored by default, because it often starts before or after the real impact. **MultiHit is off by default.**
   - A hit needs: **any one** of the chosen cues, **at least N** at the same moment, or **all** of them at the same moment. "Same moment within" sets the window in frames. Cue types a skill's animation doesn't have don't count, so a strict rule doesn't silence it.
   - Moments the rules leave out show as faint grey markers on the timeline, with a tooltip saying why.
-- **No hit markers: the sound's peaks are the hits.** Some skills have no real markers, only a damage number or effect beats. For those, the clear peaks in their sound become the hits (pink waypoints). Sound → Threshold sets how clear a peak must be. Without a readable sound, the damage number or effect beats are used.
+- **No hit markers: the sound's peaks are the hits.** Some skills have no real markers, only a damage number or effect beats. For those, the clear peaks in their sound become the hits (pink waypoints). Each hit lands on the loudest moment of its peak, and peaks closer than 120 ms count as one hit. Sound → Threshold sets how clear a peak must be. Without a readable sound, the damage number or effect beats are used.
 - **MultiHit tables** (when chosen): each hit in the table gets its own pulse, including the final hit when the table doesn't add up to 100%. Tables are matched by animation, so every version of a skill gets them.
 
 - **Timed to the real animation:** a pattern starts when the animation actually starts on your character, not when the server message arrives, and it plays faster or slower along with the animation. Hits closer than 90 ms join into one continuous pulse so they can be felt.
@@ -39,7 +39,7 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
   - Click a waypoint to add a clip on that hit, or to move the selected clips there. Double-click empty space to add a clip.
   - Ctrl-click or drag a box to select several clips. Delete, Ctrl+D (duplicate), Ctrl+C / Ctrl+V, Ctrl+A, and Ctrl+Z / Ctrl+Y (undo / redo) all work. Right-click a clip for its shape.
   - Ctrl + mouse wheel zooms and the wheel scrolls. The pulse table below shows the exact numbers.
-- Test button with a playhead, and a live motor meter.
+- **Test plays the skill's sound with the vibration.** All the skill's sounds, mod sounds included, are mixed at their animation times, so you hear and feel the skill together. Settings → Test has the sound volume and a "Vibration delay vs. sound" slider to make up for audio latency. Test also has a playhead, and there's a live motor meter.
 - Presets, Copy and Paste, and import of vibration entries from any `.tmb` file.
 - Master strength, strength per skill type and per skill, and "Only in combat".
 - A *Last skill* panel that shows what was played for your last skill and why.
