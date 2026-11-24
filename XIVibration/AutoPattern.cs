@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using XIVibration.Audio;
 using XIVibration.Timeline;
 
 namespace XIVibration;
@@ -59,6 +60,7 @@ public sealed record AutoResult(
                     if (all.HasFlag(HitSource.MultiHit)) parts.Add("MultiHit table");
                     if (all.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
                     if ((all & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) parts.Add("impacts in the animation");
+                    if (all.HasFlag(HitSource.EffectStrike)) parts.Add("strike sounds in effects");
                     if (all.HasFlag(HitSource.FlyText)) parts.Add("damage number");
                     if (all.HasFlag(HitSource.CasterVfx)) parts.Add("effect beats");
                     break;
@@ -93,14 +95,24 @@ public static class AutoPattern
         const float scale = 1f;
         var hostile = info?.CanTargetHostile ?? true;
         var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
-        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits);
+        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits, EffectStrikeFrames(tl.Sound));
 
         // Where the hits come from: real markers, else the peaks in the sound, else weak cues
         // (damage number, effect beats), else the damage number frame.
         List<HitPoint> hits;
         HitOrigin origin;
         List<HitPoint> soundPeaks;
-        if (analysis.HasMarkers)
+        // Effect strike sounds alone don't override the sound: when they are the only markers and the
+        // sound's peaks show more hits, the peaks win (a skill's effect may sound only one of its hits).
+        var onlyEffectStrikes = analysis.HasMarkers
+                                && analysis.Hits.All(h => (h.Sources & HitAnalyzer.Markers & ~HitSource.EffectStrike) == 0);
+        if (onlyEffectStrikes && sound != null
+            && (soundPeaks = SoundPeakHits(sound, cfg.Sound.Threshold, cfg.Sound.PeakWindow)).Count > analysis.Hits.Count)
+        {
+            hits = soundPeaks;
+            origin = HitOrigin.SoundPeaks;
+        }
+        else if (analysis.HasMarkers)
         {
             hits = analysis.Hits;
             origin = HitOrigin.Markers;
@@ -225,6 +237,23 @@ public static class AutoPattern
 
     /// <summary>A hit this close (ms) to a sound clip counts as covered by it.</summary>
     private const int CoverMs = 67;
+
+    /// <summary>When each strike sound played by an effect really starts (its onset), in frames.</summary>
+    public static List<int> EffectStrikeFrames(SkillSound? sound)
+    {
+        var frames = new List<int>();
+        if (sound == null)
+            return frames;
+        foreach (var t in sound.Tracks)
+        {
+            if (!t.Ref.FromEffect || !t.Ref.Exists || !HitAnalyzer.IsEffectStrikeSound(t.Ref.GamePath, t.Ref.EffectPath))
+                continue;
+            var ms = t.StartMs + (t.Envelope != null ? SkillSoundBuilder.OnsetMs(t.Envelope) : 0);
+            frames.Add((int)MathF.Round(ms / TmbParser.MsPerFrame));
+        }
+
+        return frames.Distinct().OrderBy(f => f).ToList();
+    }
 
     private static List<VibrationPulse> MergeWithHits(List<VibrationPulse> clips, List<HitPoint> hits, List<VibrationPulse> hitPulses)
     {

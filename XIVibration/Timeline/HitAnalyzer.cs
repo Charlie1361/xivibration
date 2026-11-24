@@ -21,6 +21,9 @@ public enum HitSource
 
     /// <summary>A peak in the skill's sound, used when the animation has no hit markers.</summary>
     SoundPeak = 256,
+
+    /// <summary>A strike sound played by an effect (.avfx) the animation spawns.</summary>
+    EffectStrike = 512,
 }
 
 /// <summary>One moment the controller should hit. Weight 0..1 is how hard.</summary>
@@ -45,21 +48,22 @@ public sealed record HitAnalysis(List<HitPoint> Hits, List<HitPoint> Rejected, b
 /// - sounds played on the target (..._t.scd, ..._mt.scd)
 /// - C120 vibration entries an animation already has
 /// - per-hit tables from the MultiHit plugin, counted from the damage number
+/// - strike sounds played by the animation's effects (.avfx)
 /// Skills that don't hit anything (buffs, heals) use the caster's VFX beats instead.
 /// </summary>
 public static partial class HitAnalyzer
 {
     /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
-    public const int AnalyzerVersion = 11;
+    public const int AnalyzerVersion = 12;
 
     /// <summary>Real hit markers. A damage number or an effect beat alone doesn't make a skill "have markers".</summary>
     public const HitSource Markers = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike
-                                     | HitSource.BuiltInVibration | HitSource.MultiHit;
+                                     | HitSource.BuiltInVibration | HitSource.MultiHit | HitSource.EffectStrike;
 
     /// <summary>A MultiHit table: hits counted from the damage number, plus the optional final hit.</summary>
     public sealed record MultiHitTable(IReadOnlyList<(int Frame, int Percent)> Hits, int FinalDelayFrames);
 
-    public static HitAnalysis Analyze(IReadOnlyList<TmbParser.Entry> entries, bool hostile, MultiHitTable? multiHit, int lengthFrames, HitDetection rules)
+    public static HitAnalysis Analyze(IReadOnlyList<TmbParser.Entry> entries, bool hostile, MultiHitTable? multiHit, int lengthFrames, HitDetection rules, IReadOnlyList<int>? effectStrikeFrames = null)
     {
         var chosen = rules.EffectiveSources;
         var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).DefaultIfEmpty(-1).Min();
@@ -97,6 +101,9 @@ public static partial class HitAnalyzer
                     break;
             }
         }
+
+        foreach (var f in effectStrikeFrames ?? Array.Empty<int>())
+            Add(HitSource.EffectStrike, f, 0.8f);
 
         if (!hostile)
         {
@@ -214,6 +221,31 @@ public static partial class HitAnalyzer
     // ..._add.scd, ..._c_add.scd, ..._add2.scd
     public static bool IsExtraStrikeSound(string path)
         => path.Length > 0 && ExtraStrikeRegex().IsMatch(Path.GetFileName(path).ToLowerInvariant());
+
+    /// <summary>
+    /// A strike sound inside an effect: ..._t.scd, ..._mt.scd, ..._t2.scd, a name with hit, cut,
+    /// counter, slash, impact, stab or blow, or any sound of an effect on the target.
+    /// Swings (swish, swing, whoosh, swoosh) are never strikes.
+    /// </summary>
+    public static bool IsEffectStrikeSound(string path, string? effectPath)
+    {
+        if (path.Length == 0)
+            return false;
+        var name = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        if (SwingRegex().IsMatch(name))
+            return false;
+        return EffectStrikeSuffixRegex().IsMatch(name) || StrikeWordRegex().IsMatch(name)
+               || (effectPath != null && IsTargetVfx(effectPath));
+    }
+
+    [GeneratedRegex(@"swish|swing|whoosh|swoosh")]
+    private static partial Regex SwingRegex();
+
+    [GeneratedRegex(@"_m?t\d?$")]
+    private static partial Regex EffectStrikeSuffixRegex();
+
+    [GeneratedRegex(@"hit|cut|counter|slash|impact|stab|blow")]
+    private static partial Regex StrikeWordRegex();
 
     // Shared muzzle/charge effects every skill starts with.
     private static bool IsGenericVfx(string path)

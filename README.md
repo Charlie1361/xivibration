@@ -9,10 +9,14 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 - **The last hit is always the strongest:** at least 90% on both motors, fading out.
 - **Optional, build from sound bumps instead** (Settings → Sound): each clear bump in the sound becomes a solid block at the sound's level with a short fade-out, and the sound's background doesn't vibrate.
 - **You choose what counts as a hit** (Settings → Hit detection):
-  - Cues: target flinches, hit sound on the target, effect on the target, follow-up strike sound, built-in vibration (mods), MultiHit table, damage number, effect beats (buffs and heals).
+  - Cues: target flinches, hit sound on the target, effect on the target, follow-up strike sound, **strike sound in an effect**, built-in vibration (mods), MultiHit table, damage number, effect beats (buffs and heals).
   - "Effect on the target" and "MultiHit table" are **off by default**. Target effects often start before or after the real impact.
   - A hit needs: **any one** of the chosen cues, **at least N** at the same moment, or **all** of them at the same moment. "Same moment within" sets the window in frames. Cue types a skill's animation doesn't have don't count, so a strict rule doesn't silence it.
   - Moments the rules leave out show as faint grey markers on the timeline, with a tooltip saying why.
+- **Sounds played by effects count too.** Besides the sounds the animation timeline plays, the plugin reads every effect (`.avfx`) the skill spawns, through Penumbra, and finds the sounds the effect plays and when. Mods often put a skill's strike sounds there (Paladin's Fast Blade in some mods plays all three strikes from its effect).
+  - Strike sounds in an effect are hit markers (cue "Strike sound in an effect", on by default): names ending in `_t`, `_mt`, `_t2`…, names with hit, cut, counter, slash, impact, stab or blow, and any sound of an effect on the target. The hit lands where the sound really starts (its onset), not at the file's start.
+  - Swing sounds (swish, swing, whoosh, swoosh) are never hits, but they add to the sound lanes, to Test and to the strength.
+  - When effect strikes are a skill's only markers and its sound's peaks show more hits, the peaks are used.
 - **No hit markers: the sound's peaks are the hits.** Some skills have no real markers, only a damage number or effect beats. For those, the plugin analyses the whole sound of the skill (all its files together) and uses its clear peaks as hits (pink waypoints).
   - Each hit lands on the loudest moment of its peak, and peaks closer than 120 ms count as one hit.
   - Only peaks about as loud as the loudest one are used. With the default **peak loudness window** of 20%, a peak must be at least 80% as loud, so quiet echoes and side ripples don't vibrate.
@@ -40,12 +44,12 @@ A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hi
 - **Timeline editor that works like clips on DAW tracks.** The Strong and Weak motors are two tracks, with the skill's sound drawn behind the clips like an audio waveform (bass in Strong, treble in Weak). Every hit of the animation is a numbered waypoint.
   - Drag a clip to move it. Drag its left edge to trim the start and its right edge to change the length. Drag the line on top of a clip to set that motor's level (Shift for both motors).
   - **Fades like in a DAW:** drag the small squares at a clip's top corners to set the fade-in and fade-out, and drag the dot in the middle of a fade up or down to bend its curve (double-click the dot for linear). The right-click menu has curve presets: linear, fast drop with a thin tail, or hold then drop.
-  - **Every sound file of the skill gets its own lane** under the motor tracks, at the time it starts, with its own waveform. Hover a lane for the file's path (mod or game), start and length. Click a lane to mute that file in Test.
+  - **Every sound file of the skill gets its own lane** under the motor tracks, at the time it starts, with its own waveform. Sounds played by an effect are labelled "from effect …" and have a double outline. A file that can't be played says why: "not in the game" (mods sometimes point at a missing file on purpose to silence a sound) or "can't decode". Hover a lane for the file's path (mod or game), start and length. Click a lane to mute that file in Test.
   - Clips snap to hits, to where sounds start and end, to other clips and to animation frames. Alt places freely, Ctrl moves in 1 ms steps.
   - Click a waypoint to add a clip on that hit, or to move the selected clips there. Double-click empty space to add a clip.
   - Ctrl-click or drag a box to select several clips. Delete, Ctrl+D (duplicate), Ctrl+C / Ctrl+V, Ctrl+A, and Ctrl+Z / Ctrl+Y (undo / redo) all work. Right-click a clip for its shape and fade curves.
   - Ctrl + mouse wheel zooms and the wheel scrolls. The pulse table below shows the exact numbers.
-- **Test plays the skill's sound with the vibration.** All the skill's sounds, mod sounds included, are mixed at their animation times, so you hear and feel the skill together. Settings → Test has the sound volume (0% = no sound) and a "Vibration delay vs. sound" slider to make up for audio latency. Test also has a playhead, and there's a live motor meter.
+- **Test plays the skill's sound with the vibration.** All the skill's sounds, mod sounds and sounds played by effects included, are mixed at their animation times, so you hear and feel the skill together. Settings → Test has the sound volume (0% = no sound) and a "Vibration delay vs. sound" slider to make up for audio latency. Test also has a playhead, and there's a live motor meter.
 - Presets, Copy and Paste, and import of vibration entries from any `.tmb` file.
 - Master strength, strength per skill, and "Only in combat".
 - A *Last skill* panel that shows what was played for your last skill and why.

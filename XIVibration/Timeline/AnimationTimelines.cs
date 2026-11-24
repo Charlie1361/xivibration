@@ -56,6 +56,7 @@ public sealed class AnimationTimelines
     private readonly Dictionary<uint, ActionTimelineInfo> byTimeline = new();
     private readonly Dictionary<uint, uint> actionToTimeline = new();
     private readonly Dictionary<string, Audio.SoundEnvelope?> soundCache = new();
+    private readonly Dictionary<string, List<Audio.EffectSound>> effectCache = new();
 
     /// <summary>null = not tried yet.</summary>
     public bool? PenumbraConnected { get; private set; }
@@ -127,7 +128,7 @@ public sealed class AnimationTimelines
                 signature.Append($"|{sub.Resolved}:{sub.Data?.Length ?? -1}");
                 return sub.Data;
             });
-            var sound = Audio.SkillSoundBuilder.Build(entries, this.Read, this.soundCache, signature);
+            var sound = Audio.SkillSoundBuilder.Build(entries, this.Read, this.soundCache, signature, this.effectCache);
             var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).Distinct().OrderBy(f => f).ToList();
             var end = entries.Where(e => e.Tag is "C010" && e.Fields.Length > 0).Select(e => e.TimeFrames + e.Fields[0]).DefaultIfEmpty(0).Max();
             end = Math.Max(end, entries.Select(e => e.TimeFrames).DefaultIfEmpty(0).Max());

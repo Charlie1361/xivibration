@@ -7,7 +7,7 @@ using XIVibration.Timeline;
 
 namespace XIVibration.Audio;
 
-/// <summary>Mixes all sounds (C063) of a skill's animation at their times into one WAV.</summary>
+/// <summary>Mixes all sounds of a skill (timeline and effect sounds) at their times into one WAV.</summary>
 public sealed class SoundPreview
 {
     public const int OutputRate = 48000;
@@ -17,22 +17,20 @@ public sealed class SoundPreview
     // Decoded sounds, most recently used last.
     private readonly List<(string Key, DecodedSound? Sound)> cache = new();
 
+    /// <summary>Mixes the skill's sound tracks (timeline and effect sounds) at their start times.</summary>
     /// <param name="read">Reads a game path the way the game would (mods included).</param>
-    /// <returns>16-bit mono PCM WAV, or null when the skill has no readable sound.</returns>
     /// <param name="muted">Sounds left out, by <see cref="SkillSoundRef.Key"/>.</param>
-    public byte[]? Mix(IReadOnlyList<TmbParser.Entry> entries, Func<string, (byte[]? Data, string Resolved, bool FromMod)> read, float volume, ISet<string>? muted = null)
+    /// <returns>16-bit mono PCM WAV, or null when the skill has no readable sound.</returns>
+    public byte[]? Mix(IReadOnlyList<SoundTrack> tracks, Func<string, (byte[]? Data, string Resolved, bool FromMod)> read, float volume, ISet<string>? muted = null)
     {
         var placed = new List<(int StartSample, DecodedSound Sound)>();
-        foreach (var e in entries)
+        foreach (var t in tracks)
         {
-            if (e.Tag != "C063" || !e.Path.EndsWith(".scd", StringComparison.OrdinalIgnoreCase))
+            if (!t.Ref.Decoded || (muted != null && muted.Contains(t.Ref.Key)))
                 continue;
-            var index = e.Fields.Length > 3 ? Math.Max(0, e.Fields[3]) : 0;
-            if (muted != null && muted.Contains($"{e.Path}@{e.TimeFrames}#{index}"))
-                continue;
-            var sound = this.Decode(e.Path, index, read);
+            var sound = this.Decode(t.Ref.GamePath, t.Ref.SoundIndex, read);
             if (sound != null)
-                placed.Add(((int)(e.TimeFrames * TmbParser.MsPerFrame * OutputRate / 1000f), sound));
+                placed.Add(((int)((long)t.StartMs * OutputRate / 1000), sound));
         }
 
         if (placed.Count == 0)

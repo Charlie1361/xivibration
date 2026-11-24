@@ -117,7 +117,8 @@ public enum HitMatch
 public sealed class HitDetection
 {
     public const HitSource DefaultSources = HitSource.Flinch | HitSource.TargetSound | HitSource.ExtraStrike
-                                            | HitSource.BuiltInVibration | HitSource.FlyText | HitSource.CasterVfx;
+                                            | HitSource.BuiltInVibration | HitSource.FlyText | HitSource.CasterVfx
+                                            | HitSource.EffectStrike;
 
     public HitSource Sources { get; set; } = DefaultSources;
 
@@ -191,7 +192,7 @@ public sealed class CharacterPreset
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -272,6 +273,12 @@ public sealed class Configuration : IPluginConfiguration
             // Own patterns and switched-off skills go into the first character's preset.
             this.MoveOldEditsToFirstCharacter = this.Rules.Values.Any(r => r.Origin == RuleOrigin.User)
                                                 || this.Rules.Values.Any(r => !r.Enabled) || this.AutoDisabled.Count > 0;
+        }
+
+        if (this.Version < 6)
+        {
+            // New cue: strike sounds inside effects, on by default.
+            this.Hits.Sources |= HitSource.EffectStrike;
         }
 
         this.Version = CurrentVersion;

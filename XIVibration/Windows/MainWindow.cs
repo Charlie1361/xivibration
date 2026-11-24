@@ -671,7 +671,8 @@ public sealed class MainWindow : Window, IDisposable
         {
             try
             {
-                wav = this.plugin.PreviewMixer.Mix(timeline.Entries, this.plugin.Timelines.ReadFile, this.Config.PreviewVolume / 100f, this.MutedFor(this.selectedId ?? 0));
+                if (timeline.Sound is { Tracks.Count: > 0 } snd)
+                    wav = this.plugin.PreviewMixer.Mix(snd.Tracks, this.plugin.Timelines.ReadFile, this.Config.PreviewVolume / 100f, this.MutedFor(this.selectedId ?? 0));
             }
             catch (Exception ex)
             {
@@ -1387,6 +1388,7 @@ public sealed class MainWindow : Window, IDisposable
         (HitSource.TargetSound, "Hit sound on the target", "A sound played on the target (..._t.scd, ..._mt.scd)."),
         (HitSource.TargetVfx, "Effect on the target", "An effect spawned on the target (..._t0p.avfx). Often starts before or after the real impact."),
         (HitSource.ExtraStrike, "Follow-up strike sound", "Sounds like ..._add.scd: often the only marker of a skill's last strike."),
+        (HitSource.EffectStrike, "Strike sound in an effect", "A strike sound played by an effect (.avfx) the skill spawns; mods often put their strikes there. Swing sounds (swish, whoosh) don't count."),
         (HitSource.BuiltInVibration, "Built-in vibration (mods)", "Vibration entries (C120) a mod placed on the hits."),
         (HitSource.MultiHit, "MultiHit table", "Per-hit timings from the MultiHit plugin's config, made for specific mods."),
         (HitSource.FlyText, "Damage number", "When the damage number pops. A weak cue: it's often a few frames off the visible impact."),
@@ -1528,7 +1530,9 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.TextUnformatted("Sounds:");
             foreach (var r in snd.Sounds)
-                ImGui.TextUnformatted($"   frame {r.StartFrame,3}  {r.GamePath}{(r.FromMod ? "  (mod)" : string.Empty)}{(r.Decoded ? string.Empty : "  - not found / not readable")}");
+                ImGui.TextUnformatted($"   frame {r.StartFrame,3}  {r.GamePath}{(r.FromMod ? "  (mod)" : string.Empty)}"
+                                      + (r.FromEffect ? $"  from effect {System.IO.Path.GetFileName(r.EffectPath)}" : string.Empty)
+                                      + (r.Decoded ? string.Empty : r.Exists ? "  - can't decode" : "  - not in the game"));
         }
 
         if (tl.Error != null)
@@ -1569,7 +1573,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextWrapped(
             "Hits decide when, the sound decides how strong. You choose which animation cues make a hit and how many must meet at the " +
             "same moment (Settings > Hit detection; MultiHit and 'effect on the target' are off by default). Skills without any hit " +
-            "markers use the clear peaks of their whole sound as hits (only peaks about as loud as the loudest one). Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
+            "markers use the clear peaks of their whole sound as hits (only peaks about as loud as the loudest one). Sounds played by the " +
+            "skill's effects (.avfx) count too: their strike sounds are hit markers, their swing sounds only add to the sound and strength. Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
             "strong motor, crisp sounds the weak one. The last hit is always the strongest. Optionally (Settings > Sound), patterns can be " +
             "built from the sound's bumps instead.");
         ImGui.Spacing();

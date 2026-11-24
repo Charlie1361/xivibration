@@ -521,8 +521,11 @@ public sealed class PulseTimelineEditor
                 }
             }
 
+            // Effect sounds get a dashed-looking double outline so they stand apart from the timeline's own.
             dl.AddRect(new Vector2(x0, y0), new Vector2(x1, y1), ImGui.GetColorU32(color with { W = 0.6f }), 2f);
-            var name = System.IO.Path.GetFileName(t.Ref.GamePath) + (t.Envelope == null ? "  (not found)" : muted ? "  (muted)" : string.Empty);
+            if (t.Ref.FromEffect)
+                dl.AddRect(new Vector2(x0 + 2 * scale, y0 + 2 * scale), new Vector2(Math.Max(x0 + 3 * scale, x1 - 2 * scale), y1 - 2 * scale), ImGui.GetColorU32(color with { W = 0.45f }), 2f);
+            var name = System.IO.Path.GetFileName(t.Ref.GamePath) + TrackNote(t, muted);
             dl.PushClipRect(new Vector2(Math.Max(origin.X, x0), y0), new Vector2(origin.X + width, y1), true);
             dl.AddText(new Vector2(Math.Max(origin.X, x0) + 3, y0 + (trackH - ImGui.GetTextLineHeight()) / 2f), ImGui.GetColorU32(new Vector4(1, 1, 1, muted ? 0.45f : 0.85f)), name);
             dl.PopClipRect();
@@ -533,12 +536,23 @@ public sealed class PulseTimelineEditor
                 ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
                 ImGui.SetTooltip($"{t.Ref.GamePath}{(t.Ref.FromMod ? "  (mod)" : string.Empty)}\n" +
                                  (t.Ref.FromMod ? $"{t.Ref.Resolved}\n" : string.Empty) +
-                                 $"Starts at {t.StartMs} ms (frame {t.Ref.StartFrame}), {(t.Envelope == null ? "not readable" : $"{len} ms long")}, sound #{t.Ref.SoundIndex}\n" +
+                                 (t.Ref.FromEffect ? $"Played by the effect {t.Ref.EffectPath}\n" : "Played by the animation timeline\n") +
+                                 $"Starts at {t.StartMs} ms (frame {t.Ref.StartFrame}), {(t.Envelope != null ? $"{len} ms long" : t.Ref.Exists ? "can't decode this file" : "the file isn't in the game (mods sometimes point at a missing file on purpose to silence a sound)")}, sound #{t.Ref.SoundIndex}\n" +
+                                 (t.Ref.FromEffect && HitAnalyzer.IsEffectStrikeSound(t.Ref.GamePath, t.Ref.EffectPath) ? "Counts as a strike (hit cue \"Strike sound in an effect\").\n" : string.Empty) +
                                  (muted ? "Muted in Test. Click to unmute." : "Click to mute it in Test."));
             }
         }
 
         return hit;
+    }
+
+    /// <summary>What a lane's label adds after the file name.</summary>
+    private static string TrackNote(Audio.SoundTrack t, bool muted)
+    {
+        var note = t.Ref.FromEffect ? $"  from effect {System.IO.Path.GetFileName(t.Ref.EffectPath)}" : string.Empty;
+        if (t.Envelope == null)
+            return note + (t.Ref.Exists ? "  (can't decode)" : "  (not in the game)");
+        return note + (muted ? "  (muted)" : string.Empty);
     }
 
     private static void DrawClip(ImDrawListPtr dl, VibrationPulse p, float x0, float x1, float top, float laneH, int level, Vector4 color, float strength, bool selected, int index, float scale, bool label)
@@ -617,7 +631,7 @@ public sealed class PulseTimelineEditor
     {
         if (s.HasFlag(HitSource.MultiHit)) return new(0.98f, 0.8f, 0.3f, 1f);
         if (s.HasFlag(HitSource.BuiltInVibration)) return new(0.78f, 0.62f, 1f, 1f);
-        if ((s & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike)) != 0) return new(0.95f, 0.95f, 0.95f, 1f);
+        if ((s & (HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike | HitSource.EffectStrike)) != 0) return new(0.95f, 0.95f, 0.95f, 1f);
         if (s.HasFlag(HitSource.CasterVfx)) return new(0.45f, 0.88f, 0.8f, 1f);
         if (s.HasFlag(HitSource.SoundPeak)) return new(1f, 0.55f, 0.78f, 1f);
         return new(0.7f, 0.7f, 0.7f, 1f);
@@ -631,6 +645,7 @@ public sealed class PulseTimelineEditor
         if (s.HasFlag(HitSource.TargetVfx)) parts.Add("effect on the target");
         if (s.HasFlag(HitSource.TargetSound)) parts.Add("hit sound on the target");
         if (s.HasFlag(HitSource.ExtraStrike)) parts.Add("extra strike sound");
+        if (s.HasFlag(HitSource.EffectStrike)) parts.Add("strike sound in an effect");
         if (s.HasFlag(HitSource.BuiltInVibration)) parts.Add("built-in vibration");
         if (s.HasFlag(HitSource.FlyText)) parts.Add("damage number");
         if (s.HasFlag(HitSource.CasterVfx)) parts.Add("effect beat");

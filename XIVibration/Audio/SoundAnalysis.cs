@@ -52,10 +52,14 @@ public sealed class SoundEnvelope
 }
 
 /// <summary>One sound a skill plays.</summary>
-public sealed record SkillSoundRef(string GamePath, string Resolved, bool FromMod, int StartFrame, bool Decoded, int SoundIndex = 0)
+/// <param name="EffectPath">The .avfx effect that plays it, or null when the animation timeline plays it directly.</param>
+/// <param name="Exists">The file was found (in the game or a mod); false for paths that lead nowhere.</param>
+public sealed record SkillSoundRef(string GamePath, string Resolved, bool FromMod, int StartFrame, bool Decoded, int SoundIndex = 0, string? EffectPath = null, bool Exists = true)
 {
     /// <summary>Identifies this sound in this skill (for muting it in Test).</summary>
     public string Key => $"{this.GamePath}@{this.StartFrame}#{this.SoundIndex}";
+
+    public bool FromEffect => this.EffectPath != null;
 }
 
 /// <summary>One sound file of a skill on the timeline: where it starts and its own loudness (null if unreadable).</summary>
@@ -431,25 +435,32 @@ public static class SoundSegmenter
 /// <summary>Finds, reads and mixes all sounds (C063) of a timeline. Shared by the plugin and offline checks.</summary>
 public static class SkillSoundBuilder
 {
+    /// <summary>Most effects are spawned at most a few times per skill; no need to follow deeper.</summary>
+    private const int MaxEffects = 40;
+
     /// <param name="read">Reads a game path the way the game would (mods included): data, resolved path, from a mod.</param>
     /// <param name="cache">Decoded sounds by resolved path, size and index (null = could not decode).</param>
-    /// <param name="signature">Gets each sound's resolved path and size appended.</param>
+    /// <param name="signature">Gets each sound's and effect's resolved path and size appended.</param>
+    /// <param name="effectCache">Sounds found in effect files, by resolved path and size.</param>
     public static SkillSound? Build(
         IReadOnlyList<Timeline.TmbParser.Entry> entries,
         Func<string, (byte[]? Data, string Resolved, bool FromMod)> read,
         Dictionary<string, SoundEnvelope?> cache,
-        System.Text.StringBuilder? signature = null)
+        System.Text.StringBuilder? signature = null,
+        Dictionary<string, List<EffectSound>>? effectCache = null)
     {
         var placed = new List<(int StartMs, SoundEnvelope Envelope)>();
         var refs = new List<SkillSoundRef>();
         var tracks = new List<SoundTrack>();
-        foreach (var e in entries)
-        {
-            if (e.Tag != "C063" || !e.Path.EndsWith(".scd", StringComparison.OrdinalIgnoreCase))
-                continue;
+        var seen = new HashSet<string>();
 
-            var index = e.Fields.Length > 3 ? Math.Max(0, e.Fields[3]) : 0;
-            var (data, resolved, fromMod) = read(e.Path);
+        void AddSound(string path, int index, int startFrame, string? effect)
+        {
+            // The same sound at the same moment (an effect listed twice) plays once.
+            if (!seen.Add($"{path.ToLowerInvariant()}@{startFrame}#{index}"))
+                return;
+
+            var (data, resolved, fromMod) = read(path);
             signature?.Append($"|{resolved}:{data?.Length ?? -1}");
             SoundEnvelope? env = null;
             if (data != null)
@@ -471,12 +482,52 @@ public static class SkillSoundBuilder
                 }
             }
 
-            var sref = new SkillSoundRef(e.Path, resolved, fromMod, e.TimeFrames, env != null, index);
-            var startMs = (int)MathF.Round(e.TimeFrames * Timeline.TmbParser.MsPerFrame);
+            var sref = new SkillSoundRef(path, resolved, fromMod, startFrame, env != null, index, effect, data != null);
+            var startMs = (int)MathF.Round(startFrame * Timeline.TmbParser.MsPerFrame);
             refs.Add(sref);
             tracks.Add(new SoundTrack(sref, startMs, env));
             if (env != null)
                 placed.Add((startMs, env));
+        }
+
+        // Sounds the animation timeline plays itself.
+        foreach (var e in entries)
+        {
+            if (e.Tag == "C063" && e.Path.EndsWith(".scd", StringComparison.OrdinalIgnoreCase))
+                AddSound(e.Path, e.Fields.Length > 3 ? Math.Max(0, e.Fields[3]) : 0, e.TimeFrames, null);
+        }
+
+        // Sounds played by the effects (.avfx) the animation spawns: mods often put the strikes here.
+        var effects = 0;
+        foreach (var e in entries)
+        {
+            if (e.Tag != "C012" || !e.Path.EndsWith(".avfx", StringComparison.OrdinalIgnoreCase) || effects++ >= MaxEffects)
+                continue;
+
+            var (data, resolved, _) = read(e.Path);
+            signature?.Append($"|{resolved}:{data?.Length ?? -1}");
+            if (data == null)
+                continue;
+
+            List<EffectSound> sounds;
+            var key = $"{resolved}:{data.Length}";
+            if (effectCache == null || !effectCache.TryGetValue(key, out sounds!))
+            {
+                try
+                {
+                    sounds = AvfxSounds.Parse(data);
+                }
+                catch
+                {
+                    sounds = new List<EffectSound>();
+                }
+
+                if (effectCache != null)
+                    effectCache[key] = sounds;
+            }
+
+            foreach (var snd in sounds)
+                AddSound(snd.Path, snd.Index, e.TimeFrames + snd.StartFrame, e.Path);
         }
 
         tracks = tracks.OrderBy(t => t.StartMs).ToList();
@@ -485,5 +536,28 @@ public static class SkillSoundBuilder
 
         var mix = SkillSound.Mix(placed, refs)!;
         return new SkillSound { Low = mix.Low, High = mix.High, Sounds = refs, Tracks = tracks };
+    }
+
+    /// <summary>
+    /// When a sound really starts: the first 10 ms step at half of its peak loudness or more
+    /// (files often begin with a little silence). Milliseconds from the file's start.
+    /// </summary>
+    public static int OnsetMs(SoundEnvelope env)
+    {
+        var level = new float[env.Low.Length];
+        var peak = 0f;
+        for (var i = 0; i < level.Length; i++)
+        {
+            level[i] = Math.Max(SkillSound.Level(env.Low[i], SkillSound.BassBoostDb), SkillSound.Level(env.High[i]));
+            peak = Math.Max(peak, level[i]);
+        }
+
+        for (var i = 0; i < level.Length; i++)
+        {
+            if (level[i] >= peak * 0.5f)
+                return i * SoundEnvelope.StepMs;
+        }
+
+        return 0;
     }
 }
