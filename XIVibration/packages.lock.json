@@ -16,9 +16,9 @@
       },
       "NVorbis": {
         "type": "Direct",
-        "requested": "[0.10.5, )",
-        "resolved": "0.10.5",
-        "contentHash": "o+IptCG4Avze39HrGeztC+xIp6fOOwGVAwkoa1J++4Ji1WmZ+KIKlFl5wsgxsXqBkmdpfs/vFSUproiLKYa2bw=="
+        "requested": "[1.0.0-rc.2, )",
+        "resolved": "1.0.0-rc.2",
+        "contentHash": "/X+5SlKt4bhzaCeADCs5BIiffvJisvWoaLdcneRHoAA2CE7c+HIVHT9JCAMiH0EIotd7JQ0luna+2/7A5gFwAQ=="
       }
     }
   }
