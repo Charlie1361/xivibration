@@ -2,7 +2,7 @@
   "Author": "Charlie1361",
   "Name": "XIVibration",
   "Punchline": "Gamepad vibration tool for skills",
-  "Description": "Provides gamepad vibration feedback for any skill, timed to its animation or and sound. Works with animation mods (Penumbra), works with MultiHit plugin",
+  "Description": "Provides gamepad vibration feedback for any skill, timed to its animation and sound. Works with animation mods (Penumbra), and can optionally use hit timings from the MultiHit plugin.",
   "Tags": [
     "vibration",
     "rumble",
