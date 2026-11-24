@@ -23,6 +23,8 @@ entry = {
     "Description": m.get("Description", ""),
     "ApplicableVersion": "any",
     "RepoUrl": m.get("RepoUrl", ""),
+    "IconUrl": m.get("IconUrl", ""),
+    "ImageUrls": m.get("ImageUrls", []),
     "Tags": m.get("Tags", []),
     "CategoryTags": m.get("CategoryTags", []),
     "DalamudApiLevel": m["DalamudApiLevel"],

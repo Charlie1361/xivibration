@@ -393,25 +393,19 @@ public static class AutoPattern
 
     private static int StartMs(HitPoint hit) => hit.Ms;
 
-    /// <summary>Generated fade-outs: hold this share of the clip, then fade the rest on this curve.</summary>
-    private const float FadeHoldShare = 0.3f;
-    public const int GeneratedFadeCurve = 35;
-
-    /// <summary>Whole-clip fade shapes become a short hold plus a curved fade-out (or a fade-in).</summary>
+    /// <summary>
+    /// Generated clips are always solid: constant level, no fade-in or fade-out (the hit shapes above
+    /// only decide lengths). Fades are left to the user's own edits.
+    /// </summary>
     private static void Finish(List<VibrationPulse> pulses)
     {
         foreach (var p in pulses)
         {
-            if (p.Shape == PulseShape.FadeOut)
-            {
-                p.Shape = PulseShape.Constant;
-                p.FadeOutMs = Math.Max(20, (int)(p.DurationMs * (1f - FadeHoldShare)));
-                p.FadeOutCurve = GeneratedFadeCurve;
-            }
-            else
-            {
-                p.UpgradeShape();
-            }
+            p.Shape = PulseShape.Constant;
+            p.FadeInMs = 0;
+            p.FadeOutMs = 0;
+            p.FadeInCurve = 0;
+            p.FadeOutCurve = 0;
         }
     }
 

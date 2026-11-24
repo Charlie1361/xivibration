@@ -1,13 +1,20 @@
 # XIVibration
 
+<img src="images/icon.png" width="96" align="right" alt="XIVibration icon">
+
 A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hits.
+
+![Every hit, on time: the sounds of Fast Blade, the hits found in them, and one pulse per hit on each motor](images/screenshot-hits.png)
+![The DAW-style editor: clips on two motor tracks, numbered hit waypoints and a lane for every sound file](images/screenshot-editor.png)
+![One sound file, two strikes: Atonement's hit sound gives two hits](images/screenshot-sound.png)
 
 ## How it works
 
 - **After you log in,** the plugin analyses the animation timeline (`.tmb`) of every skill of every job. It starts with your current job. If you use a mod for an animation, Penumbra hands it the modded file, so the timing matches what you see. It saves one vibration pattern per skill. Skills that already have a pattern are left alone.
 - **Hits decide when, the sound decides how strong.** Every hit of the skill's animation gets a pulse. Its strength comes from how loud the skill's sound is at that hit, read through Penumbra so mod sounds count. Bass drives the strong (heavy) motor and crisp sounds the weak (buzz) motor.
-- **The last hit is always the strongest:** at least 90% on both motors, fading out.
-- **Optional, build from sound bumps instead** (Settings → Sound): each clear bump in the sound becomes a solid block at the sound's level with a short fade-out, and the sound's background doesn't vibrate.
+- **The last hit is always the strongest:** at least 90% on both motors.
+- **Generated clips are solid:** constant level, no fade-in or fade-out. Fades are yours to add in the editor.
+- **Optional, build from sound bumps instead** (Settings → Sound): each clear bump in the sound becomes a solid block at the sound's level, and the sound's background doesn't vibrate.
 - **You choose what counts as a hit** (Settings → Hit detection):
   - Cues: target flinches, hit sound on the target, effect on the target, follow-up strike sound, **strike sound in an effect**, built-in vibration (mods), MultiHit table, damage number, effect beats (buffs and heals).
   - "Effect on the target" and "MultiHit table" are **off by default**. Target effects often start before or after the real impact.

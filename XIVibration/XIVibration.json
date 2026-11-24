@@ -13,5 +13,11 @@
   "CategoryTags": [
     "other"
   ],
-  "RepoUrl": "https://github.com/Charlie1361/xivibration"
+  "RepoUrl": "https://github.com/Charlie1361/xivibration",
+  "IconUrl": "https://raw.githubusercontent.com/Charlie1361/xivibration/main/images/icon.png",
+  "ImageUrls": [
+    "https://raw.githubusercontent.com/Charlie1361/xivibration/main/images/screenshot-hits.png",
+    "https://raw.githubusercontent.com/Charlie1361/xivibration/main/images/screenshot-editor.png",
+    "https://raw.githubusercontent.com/Charlie1361/xivibration/main/images/screenshot-sound.png"
+  ]
 }
