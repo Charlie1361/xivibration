@@ -87,8 +87,12 @@ public sealed class Plugin : IDalamudPlugin
     private readonly WindowSystem windows = new("XIVibration");
     private readonly MainWindow mainWindow;
 
+    /// <summary>The running plugin (null before it starts and after it unloads).</summary>
+    internal static Plugin? Instance { get; private set; }
+
     public Plugin()
     {
+        Instance = this;
         this.Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.Config.Migrate();
 
@@ -314,6 +318,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnLocalActionUsed(uint actionId, uint playedTimeline)
     {
+        this.Sync.Log.Add($"skill used: {this.Catalog.NameOf(actionId)} (#{actionId}), server says animation #{playedTimeline} {AnimationLog.KeyOf(playedTimeline)}");
+        this.CharaPreview.ScheduleSnapshots();
+
         // My animation is running: the game's own vibration for it (built-in in a mod, limit breaks) may play.
         this.Engine.OpenLocalWindow(Clock.NowMs + (long)this.Timelines.ForAction(actionId).LengthMs + 500);
 
@@ -441,5 +448,6 @@ public sealed class Plugin : IDalamudPlugin
         this.Engine.Dispose();
         this.windows.RemoveAllWindows();
         this.mainWindow.Dispose();
+        Instance = null;
     }
 }
