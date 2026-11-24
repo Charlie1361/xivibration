@@ -66,6 +66,9 @@ public sealed class Plugin : IDalamudPlugin
     public SkillAnalysis Analysis { get; }
     public AnimationSync Sync { get; }
     public Audio.SoundPreview PreviewMixer { get; } = new();
+
+    /// <summary>Test on your own character (Settings > Test).</summary>
+    public CharacterPreview CharaPreview { get; } = new();
     public Audio.PreviewPlayer PreviewPlayer { get; } = new();
 
     /// <summary>How the last pattern's start was timed.</summary>
@@ -130,6 +133,7 @@ public sealed class Plugin : IDalamudPlugin
             this.Start(p.Plan, p.ReceivedMs, 1f, "server message (animation not seen)", 0);
         }
 
+        this.CharaPreview.Update();
         this.Engine.Update();
     }
 
@@ -397,6 +401,7 @@ public sealed class Plugin : IDalamudPlugin
                 this.Engine.Play(Presets.Copy(Presets.All[1]), this.Config.MasterStrength, ignoreGates: true);
                 break;
             case "stop":
+                this.CharaPreview.Cancel();
                 this.Engine.StopAll();
                 this.PreviewPlayer.Stop();
                 break;
@@ -432,6 +437,7 @@ public sealed class Plugin : IDalamudPlugin
         this.Sync.Played -= this.OnAnimationPlayed;
         this.Sync.Dispose();
         this.PreviewPlayer.Dispose();
+        this.CharaPreview.Dispose();
         this.Engine.Dispose();
         this.windows.RemoveAllWindows();
         this.mainWindow.Dispose();

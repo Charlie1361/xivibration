@@ -180,6 +180,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGuiComponents.IconButton("##stopall", FontAwesomeIcon.Stop))
         {
+            this.plugin.CharaPreview.Cancel();
             this.plugin.Engine.StopAll();
             this.plugin.PreviewPlayer.Stop();
         }
@@ -670,23 +671,41 @@ public sealed class MainWindow : Window, IDisposable
     {
         this.plugin.Engine.StopAll();
         this.plugin.PreviewPlayer.Stop();
+        this.plugin.CharaPreview.Cancel();
         this.testNote = null;
+        this.testStartMs = -1;
 
-        // Optionally the skill plays on your own character: the game then plays its real sounds and effects.
-        var onCharacter = false;
+        // Vibration (and the playhead) start together with the sound or the animation.
+        var scale = strength * this.Config.MasterStrength;
+        var length = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
+        void StartVibration(long t0)
+        {
+            this.plugin.Engine.Play(pulses, scale, ignoreGates: true, startMs: t0 + this.Config.PreviewSyncMs);
+            this.testStartMs = t0 + this.Config.PreviewSyncMs;
+            this.testLengthMs = length;
+        }
+
+        // Optionally the skill plays on your own character: the game then plays its real sounds and
+        // effects. The previous Test's effects are cleared first, so the animation may start a moment later.
         if (this.Config.TestOnCharacter && timeline is { Found: true, TimelineId: > 0 })
         {
-            onCharacter = CharacterPreview.TryPlay(timeline.TimelineId, out var reason);
-            if (!onCharacter)
+            var tl = timeline;
+            var started = this.plugin.CharaPreview.Request(tl.TimelineId, () =>
             {
-                this.testNote = $"Not on your character: {reason}.";
-                this.testNoteUntil = Clock.NowMs + 4000;
-            }
+                // The animation may carry its own vibration (mods): only the pattern being tested should play.
+                this.plugin.Engine.SuppressGame(tl.LengthMs + 200);
+                StartVibration(Clock.NowMs);
+            }, out var reason);
+            if (started)
+                return;
+
+            this.testNote = $"Not on your character: {reason}.";
+            this.testNoteUntil = Clock.NowMs + 4000;
         }
 
         // The skill's sound, mixed at its animation times (mods included).
         byte[]? wav = null;
-        if (!onCharacter && this.Config.PreviewVolume > 0 && timeline is { Found: true })
+        if (this.Config.PreviewVolume > 0 && timeline is { Found: true })
         {
             try
             {
@@ -703,14 +722,7 @@ public sealed class MainWindow : Window, IDisposable
         var t0 = Clock.NowMs;
         if (wav != null)
             this.plugin.PreviewPlayer.Play(wav);
-        if (onCharacter && timeline != null)
-        {
-            // The animation may carry its own vibration (mods): only the pattern being tested should play.
-            this.plugin.Engine.SuppressGame(timeline.LengthMs + 200);
-        }
-        this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true, startMs: t0 + this.Config.PreviewSyncMs);
-        this.testStartMs = t0 + this.Config.PreviewSyncMs;
-        this.testLengthMs = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
+        StartVibration(t0);
     }
 
     /// <summary>Why the last Test couldn't play on the character, shown for a few seconds.</summary>
@@ -1277,6 +1289,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Test plays the skill's animation on your own character, with the vibration. Only you see it.\n" +
                                  "The game plays the animation's real sounds and effects, so the plugin's sound mix (and lane muting) isn't used.\n" +
+                                 "When you press Test again, the previous Test's effects are cleared first (through Penumbra), so they don't pile up.\n" +
                                  "Doesn't work while mounted, casting, in a cutscene or busy: Test then plays as usual and says why.");
         }
 
