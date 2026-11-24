@@ -4,9 +4,7 @@
 
 A Dalamud plugin that makes your gamepad vibrate on every skill, right on its hits.
 
-![Every hit, on time: the sounds of Fast Blade, the hits found in them, and one pulse per hit on each motor](images/screenshot-hits.png)
-![The DAW-style editor: clips on two motor tracks, numbered hit waypoints and a lane for every sound file](images/screenshot-editor.png)
-![One sound file, two strikes: Atonement's hit sound gives two hits](images/screenshot-sound.png)
+![XIVibration: the skill list and the timeline editor for Shield Bash](images/screenshot.png)
 
 ## How it works
 
