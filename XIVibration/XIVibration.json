@@ -1,8 +1,8 @@
 {
   "Author": "Charlie1361",
   "Name": "XIVibration",
-  "Punchline": "Gamepad vibration on every hit of every skill.",
-  "Description": "Your controller vibrates on each hit of every skill, timed to its animation and as strong as its sound. Works with animation mods (Penumbra), and every pattern can be edited.",
+  "Punchline": "Gamepad vibration tool for skills",
+  "Description": "Provides gamepad vibration feedback for any skill, timed to its animation or and sound. Works with animation mods (Penumbra), works with MultiHit plugin",
   "Tags": [
     "vibration",
     "rumble",

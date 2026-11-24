@@ -899,8 +899,7 @@ public sealed class MainWindow : Window, IDisposable
                 this.IntCell(rule, "##dur", p.DurationMs, 16, 5000, 5f, "%d", v =>
                 {
                     p.DurationMs = v;
-                    p.FadeInMs = Math.Min(p.FadeInMs, v);
-                    p.FadeOutMs = Math.Min(p.FadeOutMs, v - p.FadeInMs);
+                    p.FitFades();
                 });
                 this.LevelCell(rule, "##strong", p.Strong, StrongColor, v => p.Strong = v);
                 this.LevelCell(rule, "##weak", p.Weak, WeakColor, v => p.Weak = v);

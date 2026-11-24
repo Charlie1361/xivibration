@@ -157,8 +157,7 @@ public static class PresetTransfer
         p.DurationMs = Math.Clamp(p.DurationMs, 16, 5000);
         p.Strong = Math.Clamp(p.Strong, 0, 100);
         p.Weak = Math.Clamp(p.Weak, 0, 100);
-        p.FadeInMs = Math.Clamp(p.FadeInMs, 0, p.DurationMs);
-        p.FadeOutMs = Math.Clamp(p.FadeOutMs, 0, p.DurationMs - p.FadeInMs);
+        p.FitFades();
         p.FadeInCurve = Math.Clamp(p.FadeInCurve, -100, 100);
         p.FadeOutCurve = Math.Clamp(p.FadeOutCurve, -100, 100);
         if (!Enum.IsDefined(p.Shape))

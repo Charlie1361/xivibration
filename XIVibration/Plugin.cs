@@ -365,6 +365,9 @@ public sealed class Plugin : IDalamudPlugin
                 var c = p.Clone();
                 c.DelayMs = (int)MathF.Round(p.DelayMs / speed);
                 c.DurationMs = Math.Max(16, (int)MathF.Round(p.DurationMs / speed));
+                c.FadeInMs = (int)MathF.Round(p.FadeInMs / speed);
+                c.FadeOutMs = (int)MathF.Round(p.FadeOutMs / speed);
+                c.FitFades();
                 return c;
             }).ToList();
         }

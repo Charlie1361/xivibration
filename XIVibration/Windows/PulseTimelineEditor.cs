@@ -608,11 +608,12 @@ public sealed class PulseTimelineEditor
         var perMs = w / Math.Max(1, p.DurationMs);
         var bottom = top + laneH - 1;
         var height = Math.Clamp(level / 100f, 0f, 1f) * (laneH - 2);
-        var inX = x0 + p.FadeInMs * perMs;
-        var outX = x1 - p.FadeOutMs * perMs;
+        var (fadeIn, fadeOut) = p.FittedFades(p.DurationMs);
+        var inX = x0 + fadeIn * perMs;
+        var outX = x1 - fadeOut * perMs;
         var y = top + 5;
-        var inDot = new Vector2(x0 + p.FadeInMs * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeInCurve));
-        var outDot = new Vector2(x1 - p.FadeOutMs * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeOutCurve));
+        var inDot = new Vector2(x0 + fadeIn * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeInCurve));
+        var outDot = new Vector2(x1 - fadeOut * perMs / 2f, bottom - height * VibrationEngine.Fade(0.5f, p.FadeOutCurve));
         return new FadeHandles(new Vector2(inX, y), new Vector2(outX, y), inDot, outDot);
     }
 
@@ -767,6 +768,7 @@ public sealed class PulseTimelineEditor
                     var s = Math.Clamp(o.Start + delta, 0, oEnd - MinDurationMs);
                     p.DelayMs = s - offset;
                     p.DurationMs = oEnd - s;
+                    (p.FadeInMs, p.FadeOutMs) = VibrationPulse.FitFades(o.FadeIn, o.FadeOut, p.DurationMs);
                 }
 
                 tip = $"Start {start} ms  ·  length {end - start} ms";
@@ -779,7 +781,11 @@ public sealed class PulseTimelineEditor
                 end = Math.Max(end, g.Start + MinDurationMs);
                 var delta = end - (g.Start + g.Duration);
                 foreach (var (p, o) in this.originals)
+                {
+                    // Shrinking squeezes the fades; dragging back out in the same drag restores them.
                     p.DurationMs = Math.Max(MinDurationMs, o.Duration + delta);
+                    (p.FadeInMs, p.FadeOutMs) = VibrationPulse.FitFades(o.FadeIn, o.FadeOut, p.DurationMs);
+                }
                 tip = $"Length {this.grabbed.DurationMs} ms";
                 break;
             }

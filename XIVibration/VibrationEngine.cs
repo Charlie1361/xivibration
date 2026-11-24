@@ -161,11 +161,14 @@ public sealed unsafe class VibrationEngine : IDisposable
     public static float Envelope(VibrationPulse p, float t)
     {
         var env = Envelope(p.Shape, t, p.DurationMs);
-        if (p.FadeInMs > 0 && t < p.FadeInMs)
-            env *= Fade(t / p.FadeInMs, p.FadeInCurve);
-        var outStart = p.DurationMs - p.FadeOutMs;
-        if (p.FadeOutMs > 0 && t > outStart)
-            env *= Fade(1f - (t - outStart) / p.FadeOutMs, p.FadeOutCurve);
+
+        // Fades always lie inside the clip, even if saved data says otherwise.
+        var (fadeIn, fadeOut) = p.FittedFades(p.DurationMs);
+        if (fadeIn > 0 && t < fadeIn)
+            env *= Fade(t / fadeIn, p.FadeInCurve);
+        var outStart = p.DurationMs - fadeOut;
+        if (fadeOut > 0 && t > outStart)
+            env *= Fade(1f - (t - outStart) / fadeOut, p.FadeOutCurve);
         return env;
     }
 

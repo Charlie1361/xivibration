@@ -53,6 +53,27 @@ public sealed class VibrationPulse
 
     public VibrationPulse Clone() => (VibrationPulse)MemberwiseClone();
 
+    /// <summary>
+    /// The fades as they fit in a clip of this length: never negative, and when together they're
+    /// longer than the clip, both shrink in proportion so they fill it exactly.
+    /// </summary>
+    public (int In, int Out) FittedFades(int durationMs) => FitFades(this.FadeInMs, this.FadeOutMs, durationMs);
+
+    public static (int In, int Out) FitFades(int fadeIn, int fadeOut, int durationMs)
+    {
+        var d = Math.Max(0, durationMs);
+        var fi = Math.Max(0, fadeIn);
+        var fo = Math.Max(0, fadeOut);
+        if (fi + fo <= d)
+            return (fi, fo);
+        var k = d / (float)(fi + fo);
+        var newIn = (int)MathF.Round(fi * k);
+        return (newIn, d - newIn);
+    }
+
+    /// <summary>Makes the fades fit inside the clip (see <see cref="FittedFades"/>).</summary>
+    public void FitFades() => (this.FadeInMs, this.FadeOutMs) = this.FittedFades(this.DurationMs);
+
     /// <summary>Whole-clip FadeOut/FadeIn shapes (older patterns) become real fades with the same feel.</summary>
     public void UpgradeShape()
     {
@@ -192,7 +213,7 @@ public sealed class CharacterPreset
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -282,6 +303,16 @@ public sealed class Configuration : IPluginConfiguration
         {
             // New cue: strike sounds inside effects, on by default.
             this.Hits.Sources |= HitSource.EffectStrike;
+        }
+
+        if (this.Version < 7)
+        {
+            // Clips shortened after their fades were set could hold fades longer than themselves.
+            foreach (var r in this.Rules.Values.Concat(this.Characters.Values.SelectMany(c => c.Rules.Values)))
+            {
+                foreach (var p in r.Pulses)
+                    p.FitFades();
+            }
         }
 
         this.Version = CurrentVersion;
