@@ -54,7 +54,7 @@ public sealed record HitAnalysis(List<HitPoint> Hits, List<HitPoint> Rejected, b
 public static partial class HitAnalyzer
 {
     /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
-    public const int AnalyzerVersion = 13;
+    public const int AnalyzerVersion = 14;
 
     /// <summary>Real hit markers. A damage number or an effect beat alone doesn't make a skill "have markers".</summary>
     public const HitSource Markers = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike
@@ -249,8 +249,8 @@ public static partial class HitAnalyzer
     [GeneratedRegex(@"hit|cut|counter|slash|impact|stab|blow")]
     private static partial Regex StrikeWordRegex();
 
-    // Shared muzzle/charge effects every skill starts with.
-    private static bool IsGenericVfx(string path)
+    /// <summary>Shared muzzle/charge effects every skill starts with (cmws_shoot1c.avfx...).</summary>
+    public static bool IsGenericVfx(string path)
     {
         var name = Path.GetFileName(path).ToLowerInvariant();
         return name.StartsWith("cmws_") || name.StartsWith("cmab_") || name.StartsWith("cmmg_") || name.Contains("shoot");

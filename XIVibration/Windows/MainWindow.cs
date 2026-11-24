@@ -53,6 +53,8 @@ public sealed class MainWindow : Window, IDisposable
     private readonly PulseTimelineEditor timeline = new();
     private long testStartMs = -1;
     private long testLengthMs;
+    private string? testNote;
+    private long testNoteUntil;
 
     private int loadBudget;
     private bool dirty;
@@ -464,6 +466,8 @@ public sealed class MainWindow : Window, IDisposable
                 this.Test(preview, builtIn ? 1f : plan.Scale, plan.Timeline);
         }
 
+        this.DrawTestNote();
+
         if (builtIn && ImGui.IsItemHovered())
             ImGui.SetTooltip("Plays an approximation of the animation's own vibration.");
 
@@ -570,6 +574,8 @@ public sealed class MainWindow : Window, IDisposable
                 this.Test(plan.Pulses, plan.Scale, plan.Timeline);
         }
 
+        this.DrawTestNote();
+
         ImGui.SameLine();
         var generated = rule.Origin == RuleOrigin.Generated;
         var ctrl = ImGui.GetIO().KeyCtrl;
@@ -664,10 +670,23 @@ public sealed class MainWindow : Window, IDisposable
     {
         this.plugin.Engine.StopAll();
         this.plugin.PreviewPlayer.Stop();
+        this.testNote = null;
+
+        // Optionally the skill plays on your own character: the game then plays its real sounds and effects.
+        var onCharacter = false;
+        if (this.Config.TestOnCharacter && timeline is { Found: true, TimelineId: > 0 })
+        {
+            onCharacter = CharacterPreview.TryPlay(timeline.TimelineId, out var reason);
+            if (!onCharacter)
+            {
+                this.testNote = $"Not on your character: {reason}.";
+                this.testNoteUntil = Clock.NowMs + 4000;
+            }
+        }
 
         // The skill's sound, mixed at its animation times (mods included).
         byte[]? wav = null;
-        if (this.Config.PreviewVolume > 0 && timeline is { Found: true })
+        if (!onCharacter && this.Config.PreviewVolume > 0 && timeline is { Found: true })
         {
             try
             {
@@ -684,9 +703,24 @@ public sealed class MainWindow : Window, IDisposable
         var t0 = Clock.NowMs;
         if (wav != null)
             this.plugin.PreviewPlayer.Play(wav);
+        if (onCharacter && timeline != null)
+        {
+            // The animation may carry its own vibration (mods): only the pattern being tested should play.
+            this.plugin.Engine.SuppressGame(timeline.LengthMs + 200);
+        }
         this.plugin.Engine.Play(pulses, strength * this.Config.MasterStrength, ignoreGates: true, startMs: t0 + this.Config.PreviewSyncMs);
         this.testStartMs = t0 + this.Config.PreviewSyncMs;
         this.testLengthMs = pulses.Count == 0 ? 0 : pulses.Max(p => p.DelayMs + p.DurationMs);
+    }
+
+    /// <summary>Why the last Test couldn't play on the character, shown for a few seconds.</summary>
+    private void DrawTestNote()
+    {
+        if (this.testNote == null || Clock.NowMs > this.testNoteUntil)
+            return;
+        ImGui.SameLine();
+        using (ImRaii.PushColor(ImGuiCol.Text, Bad))
+            ImGui.TextUnformatted(this.testNote);
     }
 
     private void DrawPatternTools(ActionRule rule)
@@ -1239,6 +1273,12 @@ public sealed class MainWindow : Window, IDisposable
 
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("If the Test sound comes out late on your system, delay the vibration by the same amount (or the other way round).");
+
+            this.Check("Play the animation on my character", this.Config.TestOnCharacter, v => this.Config.TestOnCharacter = v);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Test plays the skill's animation on your own character, with the vibration. Only you see it.\n" +
+                                 "The game plays the animation's real sounds and effects, so the plugin's sound mix (and lane muting) isn't used.\n" +
+                                 "Doesn't work while mounted, casting, in a cutscene or busy: Test then plays as usual and says why.");
         }
 
         if (ImGui.CollapsingHeader("Analysis"))

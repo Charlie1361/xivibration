@@ -39,20 +39,23 @@ public static class ScdReader
         if (audioCount == 0)
             return null;
 
-        // Sound i normally plays audio i; fall back to the nearest one that has data.
-        var first = Math.Clamp(soundIndex, 0, audioCount - 1);
-        for (var k = 0; k < audioCount; k++)
-        {
-            var i = (first + k) % audioCount;
-            var entry = (int)BitConverter.ToUInt32(scd, audioTable + i * 4);
-            if (entry <= 0 || entry + 0x20 > scd.Length)
-                continue;
-            var decoded = DecodeEntry(scd, entry);
-            if (decoded != null)
-                return decoded;
-        }
+        // A file with one clip always plays it.
+        if (audioCount == 1)
+            return DecodeAt(scd, audioTable, 0);
 
-        return null;
+        // A shared bank: sound i plays clip i. A number past the last clip, or a clip without data,
+        // plays nothing (the game plays nothing either); never guess a neighbouring clip.
+        if (soundIndex < 0 || soundIndex >= audioCount)
+            return null;
+        return DecodeAt(scd, audioTable, soundIndex);
+    }
+
+    private static DecodedSound? DecodeAt(byte[] scd, int audioTable, int i)
+    {
+        var entry = (int)BitConverter.ToUInt32(scd, audioTable + i * 4);
+        if (entry <= 0 || entry + 0x20 > scd.Length)
+            return null;
+        return DecodeEntry(scd, entry);
     }
 
     private static DecodedSound? DecodeEntry(byte[] scd, int entry)

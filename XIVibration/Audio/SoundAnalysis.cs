@@ -504,6 +504,10 @@ public static class SkillSoundBuilder
             if (e.Tag != "C012" || !e.Path.EndsWith(".avfx", StringComparison.OrdinalIgnoreCase) || effects++ >= MaxEffects)
                 continue;
 
+            // The shared start flash every skill spawns: never the skill's own sound.
+            if (Timeline.HitAnalyzer.IsGenericVfx(e.Path))
+                continue;
+
             var (data, resolved, _) = read(e.Path);
             signature?.Append($"|{resolved}:{data?.Length ?? -1}");
             if (data == null)

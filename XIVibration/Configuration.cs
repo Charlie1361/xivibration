@@ -212,6 +212,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Delay of the Test vibration against its sound (ms), to make up for audio output latency.</summary>
     public int PreviewSyncMs { get; set; }
 
+    /// <summary>Test plays the skill's animation on your own character (only you see it).</summary>
+    public bool TestOnCharacter { get; set; }
+
     /// <summary>
     /// Only my character's animations may vibrate. Mods apply to everyone's animations, so
     /// built-in vibration in a mod would otherwise also fire when other players use the skill.
