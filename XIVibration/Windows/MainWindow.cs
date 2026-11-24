@@ -426,8 +426,6 @@ public sealed class MainWindow : Window, IDisposable
         else
             this.DrawAutoEditor(plan);
 
-        ImGui.Spacing();
-        this.DrawSkillHitDetection(plan);
     }
 
     private void DrawTimelineInfo(SkillPlan plan)
@@ -472,7 +470,7 @@ public sealed class MainWindow : Window, IDisposable
                 this.Test(preview, builtIn ? 1f : plan.Scale, plan.Timeline);
         }
 
-        this.DrawTestNote();
+        this.DrawTestExtras(id);
 
         if (builtIn && ImGui.IsItemHovered())
             ImGui.SetTooltip("Plays an approximation of the animation's own vibration.");
@@ -483,6 +481,8 @@ public sealed class MainWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Make your own pattern for this skill, starting from this one.");
+
+        this.DrawSkillHitDetection(plan);
 
         ImGui.Spacing();
         using (ImRaii.PushColor(ImGuiCol.Text, builtIn ? BuiltInColor : Dim))
@@ -578,7 +578,7 @@ public sealed class MainWindow : Window, IDisposable
                 this.Test(plan.Pulses, plan.Scale, plan.Timeline);
         }
 
-        this.DrawTestNote();
+        this.DrawTestExtras(plan.ActionId);
 
         ImGui.SameLine();
         var generated = rule.Origin == RuleOrigin.Generated;
@@ -599,6 +599,8 @@ public sealed class MainWindow : Window, IDisposable
                 ? "Read the skill's current animation again and rebuild this pattern."
                 : "Hold Ctrl and click to throw away your pattern and rebuild it from the animation.");
         }
+
+        this.DrawSkillHitDetection(plan);
 
         using (ImRaii.PushColor(ImGuiCol.Text, plan.Mode == SkillMode.BuiltIn ? BuiltInColor : Dim))
         {
@@ -720,7 +722,9 @@ public sealed class MainWindow : Window, IDisposable
 
         // Optionally the skill plays on your own character: the game then plays its real sounds and
         // effects. It may start a moment later (clearing old effects, or a cast pose first).
-        if (this.Config.TestOnCharacter && timeline is { Found: true, TimelineId: > 0 })
+        var skillId = this.selectedId ?? 0;
+        var soundOnly = this.Config.TestSoundOnly.TryGetValue(skillId, out var only) && only;
+        if (this.Config.TestOnCharacter && !soundOnly && timeline is { Found: true, TimelineId: > 0 })
         {
             var tl = timeline;
             var accepted = this.plugin.CharaPreview.Request(
@@ -733,7 +737,20 @@ public sealed class MainWindow : Window, IDisposable
                 },
                 why =>
                 {
-                    Note($"Not on your character: {why}.");
+                    // Play exactly as if the option were off. If the game itself refused the animation,
+                    // this skill's Test uses only the sound from now on (until its checkbox is unticked).
+                    if (why == CharacterPreview.NotStarted && skillId != 0)
+                    {
+                        this.Config.TestSoundOnly[skillId] = true;
+                        this.MarkDirty();
+                        this.SaveNow();
+                        Note("The game didn't start this animation: Test plays the sound only for this skill.");
+                    }
+                    else
+                    {
+                        Note($"Not on your character: {why}.");
+                    }
+
                     PlayWithSound();
                 },
                 out var reason);
@@ -747,6 +764,27 @@ public sealed class MainWindow : Window, IDisposable
     }
 
     /// <summary>Why the last Test couldn't play on the character, shown for a few seconds.</summary>
+    private void DrawTestExtras(uint id)
+    {
+        if (this.Config.TestOnCharacter && this.Config.TestSoundOnly.TryGetValue(id, out var only))
+        {
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Test only with sound##soundonly", ref only))
+            {
+                this.Config.TestSoundOnly[id] = only;
+                this.MarkDirty();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("The game didn't start this skill's animation on your character, so its Test plays only the sound.\n" +
+                                 "Untick to try the animation again.");
+            }
+        }
+
+        this.DrawTestNote();
+    }
+
     private void DrawTestNote()
     {
         if (this.testNote == null || Clock.NowMs > this.testNoteUntil)
@@ -1352,19 +1390,24 @@ public sealed class MainWindow : Window, IDisposable
                 this.plugin.Engine.StopAll();
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("Animation log (what plays on your character)");
-            var log = this.plugin.Sync.Log;
-            if (ImGui.Button("Copy log"))
-                ImGui.SetClipboardText(string.Join("\n", log.Lines));
-            ImGui.SameLine();
-            if (ImGui.Button("Clear log"))
-                log.Clear();
-            using (var child = ImRaii.Child("##animlog", new Vector2(-1, 160 * ImGuiHelpers.GlobalScale), true, ImGuiWindowFlags.HorizontalScrollbar))
+            this.Check("Animation log (what plays on your character)", this.Config.AnimationLog, v => this.Config.AnimationLog = v);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Logs every animation the game starts on your character, the skills you use, and what each animation slot plays after a Test.\nUseful when a skill's animation doesn't play in Test.");
+            if (this.Config.AnimationLog)
             {
-                if (child)
+                var log = this.plugin.Sync.Log;
+                if (ImGui.Button("Copy log"))
+                    ImGui.SetClipboardText(string.Join("\n", log.Lines));
+                ImGui.SameLine();
+                if (ImGui.Button("Clear log"))
+                    log.Clear();
+                using (var child = ImRaii.Child("##animlog", new Vector2(-1, 160 * ImGuiHelpers.GlobalScale), true, ImGuiWindowFlags.HorizontalScrollbar))
                 {
-                    foreach (var line in log.Lines)
-                        ImGui.TextUnformatted(line);
+                    if (child)
+                    {
+                        foreach (var line in log.Lines)
+                            ImGui.TextUnformatted(line);
+                    }
                 }
             }
 
@@ -1762,8 +1805,26 @@ public sealed class MainWindow : Window, IDisposable
 
     // ---------------------------------------------------------------- help tab
 
+    private const string KoFiUrl = "https://ko-fi.com/demidryabov";
+
     private static void DrawHelpTab()
     {
+        ImGui.TextWrapped("Support");
+        ImGui.Separator();
+        ImGui.TextWrapped("Like the plugin? You can support it on Ko-fi.");
+        using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.16f, 0.6f, 0.85f, 1f)))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(0.25f, 0.68f, 0.92f, 1f)))
+        {
+            if (ImGui.Button("Support on Ko-fi"))
+                Dalamud.Utility.Util.OpenLink(KoFiUrl);
+        }
+
+        ImGui.SameLine();
+        var url = KoFiUrl;
+        ImGui.SetNextItemWidth(240 * ImGuiHelpers.GlobalScale);
+        ImGui.InputText("##kofi", ref url, 128, ImGuiInputTextFlags.ReadOnly);
+        ImGui.Spacing();
+
         ImGui.TextWrapped("How it works");
         ImGui.Separator();
         ImGui.TextWrapped(

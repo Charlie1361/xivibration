@@ -18,10 +18,11 @@ namespace XIVibration;
 /// Penumbra (which drops every effect attached to it), and the animation starts once that's done.
 /// </para>
 /// <para>
-/// Some animations end through the job's cast set (they start chara/action/battle/magic_pld_end and
-/// the like). The game only starts those after the cast pose (battle/magic_pld_loop) has played, as in
-/// a real cast; called directly they're silently dropped. So every play is checked on the next frame,
-/// and if it didn't stick, the cast pose plays first and the animation is retried until it does.
+/// Spells that end through the job's cast set (they start chara/action/battle/magic_pld_end and the
+/// like) are dropped by the game when played on their own. So Test does what a real cast does:
+/// preload the skill's animation, put the character in the cast pose (battle/X_start + X_loop), and
+/// then let the spell replace it. The spell is tried at most twice (no rapid retries), and is
+/// checked to really be playing before the vibration starts.
 /// </para>
 /// </summary>
 public sealed unsafe class CharacterPreview : IDisposable
@@ -35,8 +36,14 @@ public sealed unsafe class CharacterPreview : IDisposable
     /// <summary>Let the new model settle a moment after the redraw.</summary>
     private const long AfterRedrawMs = 120;
 
-    /// <summary>Keep retrying after the cast pose for at most this long.</summary>
-    private const long RetryTimeoutMs = 1500;
+    /// <summary>Wait at most this long for the skill's animation to be preloaded.</summary>
+    private const long PreloadTimeoutMs = 1000;
+
+    /// <summary>How long the cast pose shows before the spell replaces it.</summary>
+    private const long CastPoseMs = 400;
+
+    /// <summary>Wait before the second (last) try.</summary>
+    private const long RetryDelayMs = 250;
 
     private readonly ICallGateSubscriber<nint, int, object?>? redrawn;
     private readonly List<(long At, string Label)> snapshots = new();
@@ -47,14 +54,17 @@ public sealed unsafe class CharacterPreview : IDisposable
     private enum Step
     {
         Redraw,
+        Preload,
+        CastPose,
         Verify,
-        Retry,
+        RetryWait,
     }
 
     private sealed class Waiting
     {
         public required uint TimelineId { get; init; }
-        public required uint PreludeId { get; init; }
+        public required string Key { get; init; }
+        public required (uint Start, uint Loop) CastPose { get; init; }
         public required int ObjectIndex { get; init; }
         public required Action<long> Started { get; init; }
         public required Action<string> Failed { get; init; }
@@ -79,6 +89,9 @@ public sealed unsafe class CharacterPreview : IDisposable
         }
     }
 
+    /// <summary>The reason given when the game itself didn't take the animation.</summary>
+    public const string NotStarted = "the game didn't start this animation";
+
     private static AnimationLog? Log => Plugin.Instance?.Sync.Log;
 
     /// <summary>
@@ -95,7 +108,8 @@ public sealed unsafe class CharacterPreview : IDisposable
         var w = new Waiting
         {
             TimelineId = tl.TimelineId,
-            PreludeId = this.PreludeFor(tl),
+            Key = KeyOf(tl.TimelineId),
+            CastPose = this.CastPoseFor(tl),
             ObjectIndex = objectIndex,
             Started = started,
             Failed = failed,
@@ -111,7 +125,7 @@ public sealed unsafe class CharacterPreview : IDisposable
             return true;
         }
 
-        this.PlayAndVerify(w);
+        this.StartPreload(w);
         return true;
     }
 
@@ -132,90 +146,114 @@ public sealed unsafe class CharacterPreview : IDisposable
         if (this.waiting is not { } w)
             return;
 
+        if (!CanPlay(w.TimelineId, out var reason, out _))
+        {
+            this.Fail(w, reason ?? "your character is busy");
+            return;
+        }
+
         var now = Clock.NowMs;
         switch (w.Step)
         {
             case Step.Redraw:
                 if ((w.DoneMs >= 0 && now - w.DoneMs >= AfterRedrawMs) || now >= w.DeadlineMs)
-                    this.PlayAndVerify(w);
+                    this.StartPreload(w);
+                break;
+
+            case Step.Preload:
+                var loaded = Preload(w.Key, w.TimelineId);
+                if (loaded || now >= w.DeadlineMs)
+                {
+                    Log?.Add(loaded ? "Test: animation preloaded" : "Test: preload didn't confirm, going on");
+                    this.AfterPreload(w);
+                }
+
+                break;
+
+            case Step.CastPose:
+                if (now >= w.DeadlineMs)
+                    this.TryPlay(w);
                 break;
 
             case Step.Verify:
                 if (IsPlaying(w.TimelineId))
                 {
-                    this.Succeed(w, "playing");
+                    this.Succeed(w);
                 }
-                else if (w.PreludeId != 0)
+                else if (w.Tries < 2)
                 {
-                    // Dropped: play the cast pose first, like a real cast, then retry.
-                    Log?.Add($"Test: the game dropped it; cast pose #{w.PreludeId} {AnimationLog.KeyOf(w.PreludeId)} first");
-                    PlayNow(w.PreludeId, out _);
-                    w.Step = Step.Retry;
-                    w.DeadlineMs = now + RetryTimeoutMs;
+                    w.Step = Step.RetryWait;
+                    w.DeadlineMs = now + RetryDelayMs;
                 }
                 else
                 {
-                    this.Fail(w);
+                    this.Fail(w, NotStarted);
                 }
 
                 break;
 
-            case Step.Retry:
-                if (IsPlaying(w.TimelineId))
-                {
-                    this.Succeed(w, $"playing after the cast pose ({w.Tries} tries)");
-                }
-                else if (now >= w.DeadlineMs || !CanPlay(w.TimelineId, out _, out _))
-                {
-                    this.Fail(w);
-                }
-                else
-                {
-                    w.Tries++;
-                    w.PlayedMs = now;
-                    PlayNow(w.TimelineId, out _);
-                }
-
+            case Step.RetryWait:
+                if (now >= w.DeadlineMs)
+                    this.TryPlay(w);
                 break;
         }
     }
 
-    private void PlayAndVerify(Waiting w)
+    private void StartPreload(Waiting w)
     {
-        if (!CanPlay(w.TimelineId, out var reason, out _) || !PlayNow(w.TimelineId, out reason))
+        w.Step = Step.Preload;
+        w.DeadlineMs = Clock.NowMs + PreloadTimeoutMs;
+    }
+
+    private void AfterPreload(Waiting w)
+    {
+        if (w.CastPose.Loop != 0 && PlayCastPose(w.CastPose.Start, w.CastPose.Loop))
         {
-            this.waiting = null;
-            w.Failed(reason ?? "the game refused");
+            Log?.Add($"Test: cast pose #{w.CastPose.Start} -> #{w.CastPose.Loop} {AnimationLog.KeyOf(w.CastPose.Loop)}");
+            w.Step = Step.CastPose;
+            w.DeadlineMs = Clock.NowMs + CastPoseMs;
             return;
         }
 
-        Log?.Add($"Test: asked the game to play #{w.TimelineId} {AnimationLog.KeyOf(w.TimelineId)}");
+        this.TryPlay(w);
+    }
+
+    private void TryPlay(Waiting w)
+    {
+        w.Tries++;
+        if (!PlayNow(w.TimelineId, out var reason))
+        {
+            this.Fail(w, reason ?? "the game refused");
+            return;
+        }
+
+        Log?.Add($"Test: play #{w.TimelineId} {AnimationLog.KeyOf(w.TimelineId)} (try {w.Tries})");
         w.PlayedMs = Clock.NowMs;
         w.Step = Step.Verify;
     }
 
-    private void Succeed(Waiting w, string how)
+    private void Succeed(Waiting w)
     {
         this.waiting = null;
         this.lastPlayMs = Clock.NowMs;
-        Log?.Add($"Test: #{w.TimelineId} {how}");
+        Log?.Add($"Test: #{w.TimelineId} is playing");
         this.ScheduleSnapshots();
         w.Started(w.PlayedMs);
     }
 
-    private void Fail(Waiting w)
+    private void Fail(Waiting w, string why)
     {
         this.waiting = null;
-        Log?.Add($"Test: the game didn't start #{w.TimelineId}");
+        Log?.Add($"Test: #{w.TimelineId} didn't play ({why})");
         this.ScheduleSnapshots();
-        w.Failed("the game didn't start this animation");
+        w.Failed(why);
     }
 
     /// <summary>
-    /// The cast pose an animation needs before it: for a sub-timeline chara/action/battle/X_end,
-    /// the timeline battle/X_loop (or battle/X_start). 0 when it needs none.
+    /// The cast pose an animation needs before it: for a sub-timeline chara/action/battle/X_end, the
+    /// timelines battle/X_start and battle/X_loop. (0, 0) when it needs none.
     /// </summary>
-    private uint PreludeFor(ActionTimelineInfo tl)
+    public (uint Start, uint Loop) CastPoseFor(ActionTimelineInfo tl)
     {
         foreach (var e in tl.Entries)
         {
@@ -224,14 +262,14 @@ public sealed unsafe class CharacterPreview : IDisposable
                 continue;
 
             var set = e.Path["chara/action/".Length..^"_end".Length];
-            foreach (var key in new[] { set + "_loop", set + "_start" })
-            {
-                if (this.TimelineByKey().TryGetValue(key, out var id))
-                    return id;
-            }
+            var map = this.TimelineByKey();
+            map.TryGetValue(set + "_start", out var start);
+            map.TryGetValue(set + "_loop", out var loop);
+            if (loop != 0 || start != 0)
+                return (start != 0 ? start : loop, loop != 0 ? loop : start);
         }
 
-        return 0;
+        return (0, 0);
     }
 
     private Dictionary<string, uint> TimelineByKey()
@@ -248,6 +286,56 @@ public sealed unsafe class CharacterPreview : IDisposable
         }
 
         return this.timelineByKey = map;
+    }
+
+    private static string KeyOf(uint timelineId)
+        => Plugin.DataManager.GetExcelSheet<ActionTimeline>().TryGetRow(timelineId, out var row) ? row.Key.ExtractText() : string.Empty;
+
+    /// <summary>Asks the game to load the skill's animation file. True once it's ready.</summary>
+    private static bool Preload(string key, uint timelineId)
+    {
+        if (key.Length == 0)
+            return true;
+
+        var mgr = FFXIVClientStructs.FFXIV.Client.System.Scheduler.ActionTimelineManager.Instance();
+        if (mgr == null)
+            return true;
+
+        var text = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(key);
+        try
+        {
+            var info = new FFXIVClientStructs.FFXIV.Client.System.Scheduler.ActionTimelineManager.PreloadActionTmbInfo();
+            *(byte**)&info = (byte*)text; // Key, at offset 0
+            info.Index = timelineId;
+            return mgr->PreloadActionTmb(&info);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Debug(ex, "PreloadActionTmb failed");
+            return true;
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(text);
+        }
+    }
+
+    /// <summary>The cast pose: an intro played once, then a loop, as a real cast does.</summary>
+    private static bool PlayCastPose(uint start, uint loop)
+    {
+        try
+        {
+            var local = Plugin.ObjectTable.LocalPlayer;
+            if (local == null || local.Address == nint.Zero)
+                return false;
+            ((Character*)local.Address)->Timeline.PlayActionTimeline((ushort)start, (ushort)loop, null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Debug(ex, "Could not play the cast pose");
+            return false;
+        }
     }
 
     /// <summary>Whether one of the character's animation slots is playing this timeline.</summary>

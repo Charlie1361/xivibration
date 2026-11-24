@@ -239,6 +239,15 @@ public sealed class Configuration : IPluginConfiguration
     public bool TestOnCharacter { get; set; }
 
     /// <summary>
+    /// Skills whose animation the game didn't start on the character: their "Test only with sound"
+    /// checkbox shows, and while it's ticked (true) their Test plays only the sound.
+    /// </summary>
+    public Dictionary<uint, bool> TestSoundOnly { get; set; } = new();
+
+    /// <summary>Diagnostics: log what plays on your character.</summary>
+    public bool AnimationLog { get; set; }
+
+    /// <summary>
     /// Only my character's animations may vibrate. Mods apply to everyone's animations, so
     /// built-in vibration in a mod would otherwise also fire when other players use the skill.
     /// </summary>

@@ -108,6 +108,8 @@ public sealed unsafe class AnimationLog
 
     public void Add(string text)
     {
+        if (Plugin.Instance?.Config.AnimationLog != true)
+            return;
         this.lines.Add($"{Clock.NowMs % 100000,5} ms  {text}");
         if (this.lines.Count > MaxLines)
             this.lines.RemoveAt(0);
@@ -126,6 +128,8 @@ public sealed unsafe class AnimationLog
     /// <summary>Which timeline each animation slot of your character is playing right now.</summary>
     public void Snapshot(string label)
     {
+        if (Plugin.Instance?.Config.AnimationLog != true)
+            return;
         var local = Plugin.ObjectTable.LocalPlayer;
         if (local == null || local.Address == nint.Zero)
             return;
