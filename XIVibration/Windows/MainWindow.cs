@@ -336,6 +336,8 @@ public sealed class MainWindow : Window, IDisposable
             SkillMode.Off => ("Off", Dim),
             _ => ("...", Dim),
         };
+        if (this.Config.SkillHits.ContainsKey(id))
+            badge += " ·H";
 
         if (this.ActionRow(id, this.selectedId == id, badge, color, 22 * scale))
             this.Select(id);
@@ -423,6 +425,9 @@ public sealed class MainWindow : Window, IDisposable
             this.DrawCustomEditor(plan, plan.Rule);
         else
             this.DrawAutoEditor(plan);
+
+        ImGui.Spacing();
+        this.DrawSkillHitDetection(plan);
     }
 
     private void DrawTimelineInfo(SkillPlan plan)
@@ -510,7 +515,7 @@ public sealed class MainWindow : Window, IDisposable
             Muted = this.MutedFor(plan.ActionId),
             ToggleMute = key => this.ToggleMute(plan.ActionId, key),
             Rejected = plan.Auto.Rejected ?? new List<HitPoint>(),
-            RuleText = this.RuleText(),
+            RuleText = this.RuleText(this.Config.HitsFor(plan.ActionId)),
             MakeEditable = () => this.CreateCustomRule(plan, preview, builtIn).Pulses,
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
@@ -635,7 +640,7 @@ public sealed class MainWindow : Window, IDisposable
             Muted = this.MutedFor(plan.ActionId),
             ToggleMute = key => this.ToggleMute(plan.ActionId, key),
             Rejected = plan.Auto.Rejected ?? new List<HitPoint>(),
-            RuleText = this.RuleText(),
+            RuleText = this.RuleText(this.Config.HitsFor(plan.ActionId)),
             Edited = this.MarkEdited,
             PlayheadMs = this.PlayheadMs,
         });
@@ -683,44 +688,62 @@ public sealed class MainWindow : Window, IDisposable
             this.testLengthMs = length;
         }
 
-        // Optionally the skill plays on your own character: the game then plays its real sounds and
-        // effects. The previous Test's effects are cleared first, so the animation may start a moment later.
-        if (this.Config.TestOnCharacter && timeline is { Found: true, TimelineId: > 0 })
+        // The usual Test: the skill's sound mixed at its animation times (mods included), with the vibration.
+        void PlayWithSound()
         {
-            var tl = timeline;
-            var started = this.plugin.CharaPreview.Request(tl.TimelineId, () =>
+            byte[]? wav = null;
+            if (this.Config.PreviewVolume > 0 && timeline is { Found: true })
             {
-                // The animation may carry its own vibration (mods): only the pattern being tested should play.
-                this.plugin.Engine.SuppressGame(tl.LengthMs + 200);
-                StartVibration(Clock.NowMs);
-            }, out var reason);
-            if (started)
-                return;
+                try
+                {
+                    if (timeline.Sound is { Tracks.Count: > 0 } snd)
+                        wav = this.plugin.PreviewMixer.Mix(snd.Tracks, this.plugin.Timelines.ReadFile, this.Config.PreviewVolume / 100f, this.MutedFor(this.selectedId ?? 0));
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.Warning(ex, "Could not mix the Test sound");
+                }
+            }
 
-            this.testNote = $"Not on your character: {reason}.";
+            // Sound and vibration start from the same moment.
+            var t0 = Clock.NowMs;
+            if (wav != null)
+                this.plugin.PreviewPlayer.Play(wav);
+            StartVibration(t0);
+        }
+
+        void Note(string text)
+        {
+            this.testNote = text;
             this.testNoteUntil = Clock.NowMs + 4000;
         }
 
-        // The skill's sound, mixed at its animation times (mods included).
-        byte[]? wav = null;
-        if (this.Config.PreviewVolume > 0 && timeline is { Found: true })
+        // Optionally the skill plays on your own character: the game then plays its real sounds and
+        // effects. It may start a moment later (clearing old effects, or a cast pose first).
+        if (this.Config.TestOnCharacter && timeline is { Found: true, TimelineId: > 0 })
         {
-            try
-            {
-                if (timeline.Sound is { Tracks.Count: > 0 } snd)
-                    wav = this.plugin.PreviewMixer.Mix(snd.Tracks, this.plugin.Timelines.ReadFile, this.Config.PreviewVolume / 100f, this.MutedFor(this.selectedId ?? 0));
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.Warning(ex, "Could not mix the Test sound");
-            }
+            var tl = timeline;
+            var accepted = this.plugin.CharaPreview.Request(
+                tl,
+                t0 =>
+                {
+                    // The animation may carry its own vibration (mods): only the pattern being tested should play.
+                    this.plugin.Engine.SuppressGame(tl.LengthMs + 200);
+                    StartVibration(t0);
+                },
+                why =>
+                {
+                    Note($"Not on your character: {why}.");
+                    PlayWithSound();
+                },
+                out var reason);
+            if (accepted)
+                return;
+
+            Note($"Not on your character: {reason}.");
         }
 
-        // Sound and vibration start from the same moment.
-        var t0 = Clock.NowMs;
-        if (wav != null)
-            this.plugin.PreviewPlayer.Play(wav);
-        StartVibration(t0);
+        PlayWithSound();
     }
 
     /// <summary>Why the last Test couldn't play on the character, shown for a few seconds.</summary>
@@ -1370,6 +1393,60 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Spacing();
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
             ImGui.TextWrapped("Commands: /xivib (open), /xivib on | off | toggle | test | stop | analyse");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        this.DrawResetEverything();
+    }
+
+    /// <summary>"Reset everything", behind a confirmation window.</summary>
+    private void DrawResetEverything()
+    {
+        const string popup = "Reset everything?##reset";
+        using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.55f, 0.15f, 0.15f, 1f)))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(0.7f, 0.2f, 0.2f, 1f)))
+        {
+            if (ImGui.Button("Reset everything..."))
+                ImGui.OpenPopup(popup);
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("All settings back to defaults and every custom vibration deleted. Asks first.");
+
+        var open = true;
+        if (!ImGui.BeginPopupModal(popup, ref open, ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+
+        ImGui.TextUnformatted("This can't be undone. It will:");
+        ImGui.BulletText("set every setting back to its default (hit detection, sound, Test, general)");
+        ImGui.BulletText($"delete your own vibration patterns and switched-off skills for every character ({this.Config.Characters.Count} preset(s))");
+        ImGui.BulletText($"delete the hit detection of single skills ({this.Config.SkillHits.Count} skill(s))");
+        ImGui.BulletText("rebuild every automatic pattern");
+        ImGui.Spacing();
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+            ImGui.TextUnformatted("Tip: export your character's preset first (Presets tab) if you may want it back.");
+        ImGui.Spacing();
+
+        using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.55f, 0.15f, 0.15f, 1f)))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(0.7f, 0.2f, 0.2f, 1f)))
+        {
+            if (ImGui.Button("Reset everything"))
+            {
+                this.plugin.ResetEverything();
+                this.selectedId = null;
+                this.editingRule = null;
+                this.muted.Clear();
+                this.testStartMs = -1;
+                this.dirty = false;
+                ImGui.CloseCurrentPopup();
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel") || ImGui.IsKeyPressed(ImGuiKey.Escape))
+            ImGui.CloseCurrentPopup();
+
+        ImGui.EndPopup();
     }
 
     private void DrawSoundSettings(float scale)
@@ -1463,9 +1540,9 @@ public sealed class MainWindow : Window, IDisposable
     };
 
     /// <summary>The hit rules in words.</summary>
-    private string RuleText()
+    private string RuleText(HitDetection? rules = null)
     {
-        var h = this.Config.Hits;
+        var h = rules ?? this.Config.Hits;
         var names = HitCues.Where(c => h.Uses(c.Source)).Select(c => c.Label.ToLowerInvariant()).ToList();
         var list = names.Count == 0 ? "(no cues chosen)" : string.Join(", ", names);
         return h.Match switch
@@ -1478,16 +1555,88 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawHitDetection(float scale)
     {
-        var h = this.Config.Hits;
-        var rebuild = false;
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+            ImGui.TextWrapped("Which cues in the animation make a hit, and how many must meet at the same moment. Skills without any hit markers use the peaks in their sound as hits (Sound > Threshold sets how clear a peak must be). A skill can have its own rules (its page > Hit detection for this skill).");
+
+        var rebuild = this.DrawHitControls(this.Config.Hits, "global", scale);
+
+        if (ImGui.Button("Reset hit detection"))
+        {
+            this.Config.Hits = new HitDetection();
+            rebuild = true;
+        }
 
         using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextWrapped("Which cues in the animation make a hit, and how many must meet at the same moment. Skills without any hit markers use the peaks in their sound as hits (Sound > Threshold sets how clear a peak must be).");
+        {
+            var own = this.Config.SkillHits.Count;
+            ImGui.TextWrapped($"A hit needs {this.RuleText()}.  {this.plugin.Analysis.OriginSummary}" +
+                              (own > 0 ? $"  {own} skill(s) use their own rules." : string.Empty));
+        }
 
+        if (rebuild)
+        {
+            this.MarkDirty();
+            this.SaveNow();
+            this.plugin.Analysis.ReanalyseAll();
+        }
+    }
+
+    /// <summary>A skill's own hit detection, on its page.</summary>
+    private void DrawSkillHitDetection(SkillPlan plan)
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var id = plan.ActionId;
+        var own = this.Config.SkillHits.TryGetValue(id, out var rules);
+        if (!ImGui.CollapsingHeader(own ? "Hit detection for this skill (own rules)###skillhits" : "Hit detection for this skill###skillhits"))
+            return;
+
+        using var indent = ImRaii.PushIndent();
+        var changed = false;
+        if (ImGui.Checkbox("Own hit detection for this skill", ref own))
+        {
+            if (own)
+                this.Config.SkillHits[id] = this.Config.Hits.Clone();
+            else
+                this.Config.SkillHits.Remove(id);
+            changed = true;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Off: this skill uses Settings > Hit detection.\nOn: it uses the rules below (starting from a copy of the general ones).");
+
+        if (this.Config.SkillHits.TryGetValue(id, out rules))
+        {
+            changed |= this.DrawHitControls(rules, $"skill{id}", scale);
+            if (ImGui.Button("Copy the general rules##skillhits"))
+            {
+                this.Config.SkillHits[id] = this.Config.Hits.Clone();
+                changed = true;
+            }
+        }
+
+        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
+        {
+            ImGui.TextWrapped($"A hit needs {this.RuleText(this.Config.HitsFor(id))}.");
+            if (plan.Rule is { Origin: RuleOrigin.User })
+                ImGui.TextWrapped("This skill uses your own pattern: hit detection moves the waypoints and changes what \"Reset to auto\" gives, not your pattern.");
+        }
+
+        if (changed)
+        {
+            this.MarkDirty();
+            this.SaveNow();
+            this.plugin.Analysis.RebuildGenerated(id);
+        }
+    }
+
+    /// <summary>Cue checkboxes, "a hit needs", N and the window, for one set of rules. True when it changed.</summary>
+    private bool DrawHitControls(HitDetection h, string idSuffix, float scale)
+    {
+        var rebuild = false;
         foreach (var (source, label, tip) in HitCues)
         {
             var on = (h.Sources & source) != 0;
-            if (ImGui.Checkbox($"{label}##cue{(int)source}", ref on))
+            if (ImGui.Checkbox($"{label}##cue{(int)source}{idSuffix}", ref on))
             {
                 h.Sources = on ? h.Sources | source : h.Sources & ~source;
                 rebuild = true;
@@ -1509,7 +1658,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetNextItemWidth(260 * scale);
         var modes = new[] { "any one of these", "at least N at the same moment", "all of these at the same moment" };
         var mode = (int)h.Match;
-        using (var combo = ImRaii.Combo("A hit needs##hits", modes[Math.Clamp(mode, 0, 2)]))
+        using (var combo = ImRaii.Combo($"A hit needs##hits{idSuffix}", modes[Math.Clamp(mode, 0, 2)]))
         {
             if (combo)
             {
@@ -1535,7 +1684,7 @@ public sealed class MainWindow : Window, IDisposable
             var chosen = Math.Max(1, System.Numerics.BitOperations.PopCount((uint)h.EffectiveSources));
             ImGui.SetNextItemWidth(160 * scale);
             var n = Math.Clamp(h.MinMatches, 1, chosen);
-            if (ImGui.SliderInt("N##hits", ref n, 1, chosen))
+            if (ImGui.SliderInt($"N##hits{idSuffix}", ref n, 1, chosen))
             {
                 h.MinMatches = n;
                 this.MarkDirty();
@@ -1546,29 +1695,14 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SetNextItemWidth(160 * scale);
         var win = h.WindowFrames;
-        if (ImGui.SliderInt("Same moment within##hits", ref win, 1, 8, $"%d frames ({win * 33} ms)"))
+        if (ImGui.SliderInt($"Same moment within##hits{idSuffix}", ref win, 1, 8, $"%d frames ({win * 33} ms)"))
         {
             h.WindowFrames = win;
             this.MarkDirty();
         }
 
         rebuild |= ImGui.IsItemDeactivatedAfterEdit();
-
-        if (ImGui.Button("Reset hit detection"))
-        {
-            this.Config.Hits = new HitDetection();
-            rebuild = true;
-        }
-
-        using (ImRaii.PushColor(ImGuiCol.Text, Dim))
-            ImGui.TextWrapped($"A hit needs {this.RuleText()}.  {this.plugin.Analysis.OriginSummary}");
-
-        if (rebuild)
-        {
-            this.MarkDirty();
-            this.SaveNow();
-            this.plugin.Analysis.ReanalyseAll();
-        }
+        return rebuild;
     }
 
     private void DrawLastSkill()

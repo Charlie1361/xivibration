@@ -89,13 +89,13 @@ public static class AutoPattern
     private static readonly Profile Support = new(new(25, 50), 110, PulseShape.Constant, new(12, 35), new(40, 60), 70, 140);
     private static readonly Profile LimitBreak = new(new(100, 100), 600, PulseShape.FadeOut, new(60, 70), new(100, 100), 150, 600);
 
-    public static AutoResult Build(ActionInfo? info, ActionTimelineInfo tl, HitAnalyzer.MultiHitTable? multiHit, Configuration cfg)
+    public static AutoResult Build(ActionInfo? info, ActionTimelineInfo tl, HitAnalyzer.MultiHitTable? multiHit, Configuration cfg, HitDetection? hitRules = null)
     {
         var profile = Pick(info);
         const float scale = 1f;
         var hostile = info?.CanTargetHostile ?? true;
         var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
-        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits, SoundCues(tl.Sound));
+        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, hitRules ?? cfg.Hits, SoundCues(tl.Sound));
 
         // Where the hits come from: real markers, else the peaks in the sound, else weak cues
         // (damage number, effect beats), else the damage number frame.

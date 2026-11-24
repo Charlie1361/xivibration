@@ -160,6 +160,8 @@ public sealed class HitDetection
 
     [Newtonsoft.Json.JsonIgnore]
     public string Key => $"{(int)this.EffectiveSources}|{this.Match}|{this.MinMatches}|{this.WindowFrames}";
+
+    public HitDetection Clone() => (HitDetection)this.MemberwiseClone();
 }
 
 /// <summary>How a skill's sounds turn into vibration clips.</summary>
@@ -248,6 +250,25 @@ public sealed class Configuration : IPluginConfiguration
     public SoundTuning Sound { get; set; } = new();
 
     public HitDetection Hits { get; set; } = new();
+
+    /// <summary>Skills with their own hit detection (instead of <see cref="Hits"/>), by action id.</summary>
+    public Dictionary<uint, HitDetection> SkillHits { get; set; } = new();
+
+    /// <summary>The hit detection a skill uses: its own, or the general one.</summary>
+    public HitDetection HitsFor(uint actionId) => this.SkillHits.TryGetValue(actionId, out var h) ? h : this.Hits;
+
+    /// <summary>Back to a fresh install: every setting at its default, every own pattern and preset gone.</summary>
+    public void ResetToDefaults()
+    {
+        var fresh = new Configuration();
+        foreach (var prop in typeof(Configuration).GetProperties())
+        {
+            if (prop.CanRead && prop.CanWrite && prop.GetIndexParameters().Length == 0)
+                prop.SetValue(this, prop.GetValue(fresh));
+        }
+
+        this.Version = CurrentVersion;
+    }
 
 
     /// <summary>

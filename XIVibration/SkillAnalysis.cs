@@ -69,6 +69,15 @@ public sealed class SkillAnalysis
         this.loggedInAt = DateTime.UtcNow - StartDelay;
     }
 
+    /// <summary>Rebuild a skill's generated pattern now (its hit detection changed). The user's own pattern is kept.</summary>
+    public void RebuildGenerated(uint actionId)
+    {
+        var cfg = this.plugin.Config;
+        if (cfg.Rules.TryGetValue(actionId, out var old) && old.Origin == RuleOrigin.Generated)
+            this.Create(actionId, old.Enabled, old.Strength);
+        cfg.Save();
+    }
+
     /// <summary>Throw away the user's pattern for a skill and rebuild it from its current animation.</summary>
     public ActionRule Regenerate(uint actionId)
     {
@@ -160,7 +169,7 @@ public sealed class SkillAnalysis
     {
         var mh = this.plugin.MultiHitFor(actionId);
         var mhText = mh == null ? "-" : string.Join(",", mh.Hits.Select(h => $"{h.Frame}:{h.Percent}")) + $"/{mh.FinalDelayFrames}";
-        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}|{this.plugin.Config.Sound.Key}|{this.plugin.Config.Hits.Key}");
+        return Configuration.StableHash($"{tl.TimelineId}|{tl.Signature}|{mhText}|{this.plugin.Config.Sound.Key}|{this.plugin.Config.HitsFor(actionId).Key}");
     }
 
     private bool IsOutdated(uint actionId, ActionRule rule)

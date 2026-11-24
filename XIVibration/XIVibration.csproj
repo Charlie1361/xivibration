@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.17.1.0</Version>
+    <Version>1.18.0.0</Version>
     <Description>Add controller vibration to any skill.</Description>
     <PackageProjectUrl>https://github.com/Charlie1361/xivibration</PackageProjectUrl>
     <Nullable>enable</Nullable>

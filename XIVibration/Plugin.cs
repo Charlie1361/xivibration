@@ -147,7 +147,7 @@ public sealed class Plugin : IDalamudPlugin
     private int presetCheck;
 
     public HitAnalyzer.MultiHitTable? MultiHitFor(uint actionId)
-        => this.Config.Hits.Uses(HitSource.MultiHit) && this.MultiHit.TryGet(actionId, out var t) ? t : null;
+        => this.Config.HitsFor(actionId).Uses(HitSource.MultiHit) && this.MultiHit.TryGet(actionId, out var t) ? t : null;
 
     private readonly Dictionary<(uint Action, uint Timeline), (int Key, AutoResult Result)> autoCache = new();
 
@@ -157,12 +157,12 @@ public sealed class Plugin : IDalamudPlugin
         var key = HashCode.Combine(
             this.Timelines.Generation,
             this.MultiHit.Version,
-            this.Config.Hits.Key,
+            this.Config.HitsFor(actionId).Key,
             this.Config.Sound.Key);
         if (this.autoCache.TryGetValue((actionId, tl.TimelineId), out var c) && c.Key == key)
             return c.Result;
 
-        var result = AutoPattern.Build(this.Catalog.Get(actionId), tl, this.MultiHitFor(actionId), this.Config);
+        var result = AutoPattern.Build(this.Catalog.Get(actionId), tl, this.MultiHitFor(actionId), this.Config, this.Config.HitsFor(actionId));
         this.autoCache[(actionId, tl.TimelineId)] = (key, result);
         return result;
     }
@@ -173,6 +173,26 @@ public sealed class Plugin : IDalamudPlugin
     public CharacterPreset? ActivePreset { get; private set; }
 
     /// <summary>Picks the logged-in character's preset (made empty if new). Cheap when nothing changed.</summary>
+    /// <summary>
+    /// Back to a fresh install: every setting at its default, every own pattern, switched-off skill,
+    /// character preset and per-skill hit detection gone. Generated patterns are rebuilt.
+    /// </summary>
+    public void ResetEverything()
+    {
+        this.CharaPreview.Cancel();
+        this.Engine.StopAll();
+        this.PreviewPlayer.Stop();
+        this.Config.ResetToDefaults();
+        this.Config.Save();
+        this.autoCache.Clear();
+        this.ActivePreset = null;
+        this.LastPlan = null;
+        this.pending = null;
+        this.UpdateActivePreset();
+        this.Analysis.ReanalyseAll();
+        Chat.Print("[XIVibration] Everything was reset to defaults. Vibration patterns are being rebuilt.");
+    }
+
     private void UpdateActivePreset()
     {
         var lp = ObjectTable.LocalPlayer;

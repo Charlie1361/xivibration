@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Ipc;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using Lumina.Excel.Sheets;
+using XIVibration.Timeline;
 
 namespace XIVibration;
 
@@ -13,6 +16,12 @@ namespace XIVibration;
 /// Effects from the previous Test would stay on the character and pile up, and the game has no safe
 /// call to remove them. So when a Test played recently, the character is first redrawn through
 /// Penumbra (which drops every effect attached to it), and the animation starts once that's done.
+/// </para>
+/// <para>
+/// Some animations end through the job's cast set (they start chara/action/battle/magic_pld_end and
+/// the like). The game only starts those after the cast pose (battle/magic_pld_loop) has played, as in
+/// a real cast; called directly they're silently dropped. So every play is checked on the next frame,
+/// and if it didn't stick, the cast pose plays first and the animation is retried until it does.
 /// </para>
 /// </summary>
 public sealed unsafe class CharacterPreview : IDisposable
@@ -26,20 +35,34 @@ public sealed unsafe class CharacterPreview : IDisposable
     /// <summary>Let the new model settle a moment after the redraw.</summary>
     private const long AfterRedrawMs = 120;
 
+    /// <summary>Keep retrying after the cast pose for at most this long.</summary>
+    private const long RetryTimeoutMs = 1500;
+
     private readonly ICallGateSubscriber<nint, int, object?>? redrawn;
+    private readonly List<(long At, string Label)> snapshots = new();
+    private Dictionary<string, uint>? timelineByKey;
     private long lastPlayMs = long.MinValue;
     private Waiting? waiting;
 
-    // Slot snapshots after a Test play, for Diagnostics: (time, label).
-    private readonly List<(long At, string Label)> snapshots = new();
+    private enum Step
+    {
+        Redraw,
+        Verify,
+        Retry,
+    }
 
     private sealed class Waiting
     {
         public required uint TimelineId { get; init; }
+        public required uint PreludeId { get; init; }
         public required int ObjectIndex { get; init; }
-        public required Action Started { get; init; }
+        public required Action<long> Started { get; init; }
+        public required Action<string> Failed { get; init; }
+        public Step Step { get; set; }
         public long DeadlineMs { get; set; }
         public long DoneMs { get; set; } = -1;
+        public long PlayedMs { get; set; }
+        public int Tries { get; set; }
     }
 
     public CharacterPreview()
@@ -56,28 +79,39 @@ public sealed unsafe class CharacterPreview : IDisposable
         }
     }
 
+    private static AnimationLog? Log => Plugin.Instance?.Sync.Log;
+
     /// <summary>
-    /// Plays the animation on the character, clearing the previous Test's effects first if needed.
-    /// <paramref name="started"/> runs at the moment the animation starts (now, or after the redraw).
+    /// Plays the skill's animation on the character. <paramref name="started"/> gets the moment the
+    /// animation really started; <paramref name="failed"/> runs if the game never took it.
     /// </summary>
-    /// <returns>False with a reason when the character can't play it now.</returns>
-    public bool Request(uint timelineId, Action started, out string? reason)
+    /// <returns>False with a reason when the character can't play anything now.</returns>
+    public bool Request(ActionTimelineInfo tl, Action<long> started, Action<string> failed, out string? reason)
     {
         this.waiting = null;
-        if (!CanPlay(timelineId, out reason, out var objectIndex))
+        if (!CanPlay(tl.TimelineId, out reason, out var objectIndex))
             return false;
+
+        var w = new Waiting
+        {
+            TimelineId = tl.TimelineId,
+            PreludeId = this.PreludeFor(tl),
+            ObjectIndex = objectIndex,
+            Started = started,
+            Failed = failed,
+        };
+        this.waiting = w;
 
         var now = Clock.NowMs;
-        var clear = now - this.lastPlayMs < EffectsLingerMs && this.redrawn != null;
-        var w = new Waiting { TimelineId = timelineId, ObjectIndex = objectIndex, Started = started };
-
-        if (clear && this.StartRedraw(w))
+        if (now - this.lastPlayMs < EffectsLingerMs && this.redrawn != null && Redraw(objectIndex))
+        {
+            w.Step = Step.Redraw;
+            w.DeadlineMs = now + RedrawTimeoutMs;
+            Log?.Add("Test: clearing the previous Test's effects (redraw)");
             return true;
+        }
 
-        if (!Play(timelineId, out reason))
-            return false;
-        this.lastPlayMs = Clock.NowMs;
-        started();
+        this.PlayAndVerify(w);
         return true;
     }
 
@@ -91,7 +125,7 @@ public sealed unsafe class CharacterPreview : IDisposable
         {
             if (Clock.NowMs < this.snapshots[i].At)
                 continue;
-            Plugin.Instance?.Sync.Log.Snapshot(this.snapshots[i].Label);
+            Log?.Snapshot(this.snapshots[i].Label);
             this.snapshots.RemoveAt(i);
         }
 
@@ -99,30 +133,142 @@ public sealed unsafe class CharacterPreview : IDisposable
             return;
 
         var now = Clock.NowMs;
-        var ready = (w.DoneMs >= 0 && now - w.DoneMs >= AfterRedrawMs) || now >= w.DeadlineMs;
-        if (!ready)
-            return;
+        switch (w.Step)
+        {
+            case Step.Redraw:
+                if ((w.DoneMs >= 0 && now - w.DoneMs >= AfterRedrawMs) || now >= w.DeadlineMs)
+                    this.PlayAndVerify(w);
+                break;
 
-        this.waiting = null;
-        if (!CanPlay(w.TimelineId, out _, out _) || !Play(w.TimelineId, out _))
-            return;
-        this.lastPlayMs = Clock.NowMs;
-        w.Started();
+            case Step.Verify:
+                if (IsPlaying(w.TimelineId))
+                {
+                    this.Succeed(w, "playing");
+                }
+                else if (w.PreludeId != 0)
+                {
+                    // Dropped: play the cast pose first, like a real cast, then retry.
+                    Log?.Add($"Test: the game dropped it; cast pose #{w.PreludeId} {AnimationLog.KeyOf(w.PreludeId)} first");
+                    PlayNow(w.PreludeId, out _);
+                    w.Step = Step.Retry;
+                    w.DeadlineMs = now + RetryTimeoutMs;
+                }
+                else
+                {
+                    this.Fail(w);
+                }
+
+                break;
+
+            case Step.Retry:
+                if (IsPlaying(w.TimelineId))
+                {
+                    this.Succeed(w, $"playing after the cast pose ({w.Tries} tries)");
+                }
+                else if (now >= w.DeadlineMs || !CanPlay(w.TimelineId, out _, out _))
+                {
+                    this.Fail(w);
+                }
+                else
+                {
+                    w.Tries++;
+                    w.PlayedMs = now;
+                    PlayNow(w.TimelineId, out _);
+                }
+
+                break;
+        }
     }
 
-    private bool StartRedraw(Waiting w)
+    private void PlayAndVerify(Waiting w)
     {
-        if (!Redraw(w.ObjectIndex))
+        if (!CanPlay(w.TimelineId, out var reason, out _) || !PlayNow(w.TimelineId, out reason))
+        {
+            this.waiting = null;
+            w.Failed(reason ?? "the game refused");
+            return;
+        }
+
+        Log?.Add($"Test: asked the game to play #{w.TimelineId} {AnimationLog.KeyOf(w.TimelineId)}");
+        w.PlayedMs = Clock.NowMs;
+        w.Step = Step.Verify;
+    }
+
+    private void Succeed(Waiting w, string how)
+    {
+        this.waiting = null;
+        this.lastPlayMs = Clock.NowMs;
+        Log?.Add($"Test: #{w.TimelineId} {how}");
+        this.ScheduleSnapshots();
+        w.Started(w.PlayedMs);
+    }
+
+    private void Fail(Waiting w)
+    {
+        this.waiting = null;
+        Log?.Add($"Test: the game didn't start #{w.TimelineId}");
+        this.ScheduleSnapshots();
+        w.Failed("the game didn't start this animation");
+    }
+
+    /// <summary>
+    /// The cast pose an animation needs before it: for a sub-timeline chara/action/battle/X_end,
+    /// the timeline battle/X_loop (or battle/X_start). 0 when it needs none.
+    /// </summary>
+    private uint PreludeFor(ActionTimelineInfo tl)
+    {
+        foreach (var e in tl.Entries)
+        {
+            if (e.Tag != "C002" || !e.Path.StartsWith("chara/action/battle/", StringComparison.OrdinalIgnoreCase)
+                || !e.Path.EndsWith("_end", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var set = e.Path["chara/action/".Length..^"_end".Length];
+            foreach (var key in new[] { set + "_loop", set + "_start" })
+            {
+                if (this.TimelineByKey().TryGetValue(key, out var id))
+                    return id;
+            }
+        }
+
+        return 0;
+    }
+
+    private Dictionary<string, uint> TimelineByKey()
+    {
+        if (this.timelineByKey != null)
+            return this.timelineByKey;
+
+        var map = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in Plugin.DataManager.GetExcelSheet<ActionTimeline>())
+        {
+            var key = row.Key.ExtractText();
+            if (key.Length > 0)
+                map.TryAdd(key, row.RowId);
+        }
+
+        return this.timelineByKey = map;
+    }
+
+    /// <summary>Whether one of the character's animation slots is playing this timeline.</summary>
+    private static bool IsPlaying(uint timelineId)
+    {
+        var local = Plugin.ObjectTable.LocalPlayer;
+        if (local == null || local.Address == nint.Zero)
             return false;
-        w.DoneMs = -1;
-        w.DeadlineMs = Clock.NowMs + RedrawTimeoutMs;
-        this.waiting = w;
-        return true;
+        var seq = &((Character*)local.Address)->Timeline.TimelineSequencer;
+        for (var i = 0u; i < 14; i++)
+        {
+            if (seq->GetSlotTimeline(i) == timelineId)
+                return true;
+        }
+
+        return false;
     }
 
     private void OnRedrawn(nint address, int objectIndex)
     {
-        if (this.waiting is { } w && w.ObjectIndex == objectIndex && w.DoneMs < 0)
+        if (this.waiting is { Step: Step.Redraw } w && w.ObjectIndex == objectIndex && w.DoneMs < 0)
             w.DoneMs = Clock.NowMs;
     }
 
@@ -169,16 +315,6 @@ public sealed unsafe class CharacterPreview : IDisposable
         else if (c[ConditionFlag.BetweenAreas] || c[ConditionFlag.BetweenAreas51] || c[ConditionFlag.Occupied] || c[ConditionFlag.OccupiedInEvent])
             reason = "your character is busy";
         return reason == null;
-    }
-
-    private bool Play(uint timelineId, out string? reason)
-    {
-        var ok = PlayNow(timelineId, out reason);
-        Plugin.Instance?.Sync.Log.Add(ok ? $"Test: asked the game to play #{timelineId} {AnimationLog.KeyOf(timelineId)}" : $"Test: couldn't play ({reason})");
-        if (ok)
-            this.ScheduleSnapshots();
-
-        return ok;
     }
 
     /// <summary>Logs what each animation slot plays shortly after now (Diagnostics).</summary>
