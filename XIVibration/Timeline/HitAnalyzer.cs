@@ -54,7 +54,7 @@ public sealed record HitAnalysis(List<HitPoint> Hits, List<HitPoint> Rejected, b
 public static partial class HitAnalyzer
 {
     /// <summary>Bump when the analysis changes, so saved patterns get rebuilt.</summary>
-    public const int AnalyzerVersion = 12;
+    public const int AnalyzerVersion = 13;
 
     /// <summary>Real hit markers. A damage number or an effect beat alone doesn't make a skill "have markers".</summary>
     public const HitSource Markers = HitSource.Flinch | HitSource.TargetVfx | HitSource.TargetSound | HitSource.ExtraStrike
@@ -63,7 +63,7 @@ public static partial class HitAnalyzer
     /// <summary>A MultiHit table: hits counted from the damage number, plus the optional final hit.</summary>
     public sealed record MultiHitTable(IReadOnlyList<(int Frame, int Percent)> Hits, int FinalDelayFrames);
 
-    public static HitAnalysis Analyze(IReadOnlyList<TmbParser.Entry> entries, bool hostile, MultiHitTable? multiHit, int lengthFrames, HitDetection rules, IReadOnlyList<int>? effectStrikeFrames = null)
+    public static HitAnalysis Analyze(IReadOnlyList<TmbParser.Entry> entries, bool hostile, MultiHitTable? multiHit, int lengthFrames, HitDetection rules, IReadOnlyList<(int Frame, HitSource Source)>? soundCues = null)
     {
         var chosen = rules.EffectiveSources;
         var flyText = entries.Where(e => e.Tag == "C011").Select(e => e.TimeFrames).DefaultIfEmpty(-1).Min();
@@ -102,8 +102,10 @@ public static partial class HitAnalyzer
             }
         }
 
-        foreach (var f in effectStrikeFrames ?? Array.Empty<int>())
-            Add(HitSource.EffectStrike, f, 0.8f);
+        // Cues found in the sound files themselves: strikes played by effects, and the later
+        // strikes of a hit-sound file that holds several.
+        foreach (var (f, src) in soundCues ?? Array.Empty<(int, HitSource)>())
+            Add(src, f, src == HitSource.EffectStrike ? 0.8f : 0.7f);
 
         if (!hostile)
         {

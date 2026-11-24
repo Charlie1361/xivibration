@@ -95,7 +95,7 @@ public static class AutoPattern
         const float scale = 1f;
         var hostile = info?.CanTargetHostile ?? true;
         var sound = tl.Sound is { Low.Length: > 0 } s ? s : null;
-        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits, EffectStrikeFrames(tl.Sound));
+        var analysis = HitAnalyzer.Analyze(tl.Entries, hostile, multiHit, tl.LengthFrames, cfg.Hits, SoundCues(tl.Sound));
 
         // Where the hits come from: real markers, else the peaks in the sound, else weak cues
         // (damage number, effect beats), else the damage number frame.
@@ -238,21 +238,47 @@ public static class AutoPattern
     /// <summary>A hit this close (ms) to a sound clip counts as covered by it.</summary>
     private const int CoverMs = 67;
 
-    /// <summary>When each strike sound played by an effect really starts (its onset), in frames.</summary>
-    public static List<int> EffectStrikeFrames(SkillSound? sound)
+    /// <summary>
+    /// Hit cues found in the sound files, in frames:
+    /// - every strike sound an effect plays, at the start of each of its bursts;
+    /// - the later bursts of a hit sound the timeline plays (..._t.scd, ..._add.scd): one file can
+    ///   hold several strikes. Its first burst is already the timeline's own marker.
+    /// </summary>
+    public static List<(int Frame, HitSource Source)> SoundCues(SkillSound? sound)
     {
-        var frames = new List<int>();
+        var cues = new List<(int Frame, HitSource Source)>();
         if (sound == null)
-            return frames;
+            return cues;
+
+        int Frame(int ms) => (int)MathF.Round(ms / TmbParser.MsPerFrame);
         foreach (var t in sound.Tracks)
         {
-            if (!t.Ref.FromEffect || !t.Ref.Exists || !HitAnalyzer.IsEffectStrikeSound(t.Ref.GamePath, t.Ref.EffectPath))
+            if (!t.Ref.Exists)
                 continue;
-            var ms = t.StartMs + (t.Envelope != null ? SkillSoundBuilder.OnsetMs(t.Envelope) : 0);
-            frames.Add((int)MathF.Round(ms / TmbParser.MsPerFrame));
+
+            if (t.Ref.FromEffect)
+            {
+                if (!HitAnalyzer.IsEffectStrikeSound(t.Ref.GamePath, t.Ref.EffectPath))
+                    continue;
+                var onsets = t.Envelope != null ? SkillSoundBuilder.BurstOnsetsMs(t.Envelope) : new List<int>();
+                if (onsets.Count == 0)
+                    onsets.Add(0);
+                foreach (var ms in onsets)
+                    cues.Add((Frame(t.StartMs + ms), HitSource.EffectStrike));
+            }
+            else if (t.Envelope != null)
+            {
+                var src = HitAnalyzer.IsTargetSound(t.Ref.GamePath) ? HitSource.TargetSound
+                        : HitAnalyzer.IsExtraStrikeSound(t.Ref.GamePath) ? HitSource.ExtraStrike
+                        : HitSource.None;
+                if (src == HitSource.None)
+                    continue;
+                foreach (var ms in SkillSoundBuilder.BurstOnsetsMs(t.Envelope).Skip(1))
+                    cues.Add((Frame(t.StartMs + ms), src));
+            }
         }
 
-        return frames.Distinct().OrderBy(f => f).ToList();
+        return cues.Distinct().OrderBy(c => c.Frame).ToList();
     }
 
     private static List<VibrationPulse> MergeWithHits(List<VibrationPulse> clips, List<HitPoint> hits, List<VibrationPulse> hitPulses)

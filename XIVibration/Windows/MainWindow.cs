@@ -1574,7 +1574,7 @@ public sealed class MainWindow : Window, IDisposable
             "Hits decide when, the sound decides how strong. You choose which animation cues make a hit and how many must meet at the " +
             "same moment (Settings > Hit detection; MultiHit and 'effect on the target' are off by default). Skills without any hit " +
             "markers use the clear peaks of their whole sound as hits (only peaks about as loud as the loudest one). Sounds played by the " +
-            "skill's effects (.avfx) count too: their strike sounds are hit markers, their swing sounds only add to the sound and strength. Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
+            "skill's effects (.avfx) count too: their strike sounds are hit markers, their swing sounds only add to the sound and strength. A hit sound file that holds several strikes (bursts with a pause between them) gives a hit for each. Each pulse is as strong as the skill's sound is loud at that moment: bass drives the " +
             "strong motor, crisp sounds the weak one. The last hit is always the strongest. Optionally (Settings > Sound), patterns can be " +
             "built from the sound's bumps instead.");
         ImGui.Spacing();

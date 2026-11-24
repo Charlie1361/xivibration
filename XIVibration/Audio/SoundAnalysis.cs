@@ -539,6 +539,56 @@ public static class SkillSoundBuilder
     }
 
     /// <summary>
+    /// Where each separate burst of a sound file starts, in ms from the file's start. A file can hold
+    /// several strikes; a new one begins only after a real pause (at least <see cref="BurstGapMs"/> below
+    /// 15% of the file's peak) followed by a rise to half the peak or more. Tails and ripples never split.
+    /// </summary>
+    public static List<int> BurstOnsetsMs(SoundEnvelope env)
+    {
+        var level = new float[env.Low.Length];
+        var peak = 0f;
+        for (var i = 0; i < level.Length; i++)
+        {
+            level[i] = Math.Max(SkillSound.Level(env.Low[i], SkillSound.BassBoostDb), SkillSound.Level(env.High[i]));
+            peak = Math.Max(peak, level[i]);
+        }
+
+        var onsets = new List<int>();
+        if (peak <= 0f)
+            return onsets;
+
+        var gapSteps = BurstGapMs / SoundEnvelope.StepMs;
+        var inBurst = false;
+        var quiet = 0;
+        for (var i = 0; i < level.Length; i++)
+        {
+            if (!inBurst)
+            {
+                if (level[i] >= peak * 0.5f)
+                {
+                    onsets.Add(i * SoundEnvelope.StepMs);
+                    inBurst = true;
+                    quiet = 0;
+                }
+            }
+            else if (level[i] < peak * 0.15f)
+            {
+                if (++quiet >= gapSteps)
+                    inBurst = false;
+            }
+            else
+            {
+                quiet = 0;
+            }
+        }
+
+        return onsets;
+    }
+
+    /// <summary>How long a pause inside a sound file must be to start a new strike.</summary>
+    public const int BurstGapMs = 60;
+
+    /// <summary>
     /// When a sound really starts: the first 10 ms step at half of its peak loudness or more
     /// (files often begin with a little silence). Milliseconds from the file's start.
     /// </summary>
