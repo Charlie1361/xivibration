@@ -552,12 +552,10 @@ public sealed class MainWindow : Window, IDisposable
     {
         var scale = ImGuiHelpers.GlobalScale;
 
-        var enabled = rule.Enabled;
+        // The same switch as the checkbox in the skill list (own patterns and generated ones alike).
+        var enabled = plan.Mode is not SkillMode.Off;
         if (ImGui.Checkbox("Enabled##rule", ref enabled))
-        {
-            rule.Enabled = enabled;
-            this.MarkDirty();
-        }
+            this.SetSkillOn(plan.ActionId, enabled);
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(140 * scale);
@@ -1290,6 +1288,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.SetTooltip("Test plays the skill's animation on your own character, with the vibration. Only you see it.\n" +
                                  "The game plays the animation's real sounds and effects, so the plugin's sound mix (and lane muting) isn't used.\n" +
                                  "When you press Test again, the previous Test's effects are cleared first (through Penumbra), so they don't pile up.\n" +
+                                 "A sheathed weapon is drawn first (/battlemode on): spells take their motion from the battle animations, which only load with the weapon out.\n" +
                                  "Doesn't work while mounted, casting, in a cutscene or busy: Test then plays as usual and says why.");
         }
 
